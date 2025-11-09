@@ -11,11 +11,15 @@
   },
   "dependencies": {
     "expo": "~54.0.23",
+    "expo-audio": "~1.0.14",
+    "expo-av": "~16.0.7",
+    "expo-location": "~19.0.7",
+    "expo-sqlite": "~16.0.9",
     "expo-status-bar": "~3.0.8",
+    "expo-video": "~3.0.14",
     "react": "19.1.0",
     "react-native": "0.81.5",
-    "react-native-maps": "1.20.1",
-    "expo-location": "~19.0.7"
+    "react-native-maps": "1.20.1"
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
