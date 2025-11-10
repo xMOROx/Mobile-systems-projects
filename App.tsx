@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, Text, View, ActivityIndicator, Alert, Platform } from 'react-native';
 import { Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 
@@ -8,6 +8,9 @@ import LocationService from './src/services/LocationService';
 import AudioService from './src/services/AudioService';
 import { MapComponent } from './src/components/MapComponent';
 import { RecordButton } from './src/components/RecordButton';
+import { ViewToggle, ViewMode } from './src/components/ViewToggle';
+import { MapLegend } from './src/components/MapLegend';
+import { StatsPanel } from './src/components/StatsPanel';
 import { RecordingEntry } from './src/types';
 
 export default function App() {
@@ -16,6 +19,7 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingsList, setRecordingsList] = useState<RecordingEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [viewMode, setViewMode] = useState<ViewMode>('both');
 
   useEffect(() => {
     initializeApp();
@@ -23,27 +27,46 @@ export default function App() {
 
   const initializeApp = async () => {
     try {
-      // Załaduj nagrania z bazy
-      loadRecordings();
+      console.log('Initializing app...');
 
-      // Pobierz lokalizację
-      const currentLocation = await LocationService.getCurrentLocation();
-      if (currentLocation) {
-        setLocation(currentLocation);
-      } else {
-        setErrorMsg('Could not fetch location. Please check GPS and permissions.');
+      // Test database
+      try {
+        loadRecordings();
+        console.log('Database initialized successfully');
+      } catch (dbError) {
+        console.error('Database error:', dbError);
+        setErrorMsg('Database initialization failed');
+      }
+
+      // Test location
+      try {
+        const currentLocation = await LocationService.getCurrentLocation();
+        if (currentLocation) {
+          setLocation(currentLocation);
+          console.log('Location obtained:', currentLocation.coords);
+        } else {
+          setErrorMsg('Could not fetch location. Please check GPS and permissions.');
+        }
+      } catch (locError) {
+        console.error('Location error:', locError);
+        setErrorMsg('Location service failed');
       }
     } catch (error) {
       console.error('Error initializing app:', error);
-      setErrorMsg('Error initializing application');
+      setErrorMsg(`Error: ${error}`);
     } finally {
       setIsLoading(false);
     }
   };
 
   const loadRecordings = () => {
-    const recordings = DatabaseService.getAllRecordings();
-    setRecordingsList(recordings);
+    try {
+      const recordings = DatabaseService.getAllRecordings();
+      console.log(`Loaded ${recordings.length} recordings`);
+      setRecordingsList(recordings);
+    } catch (error) {
+      console.error('Error loading recordings:', error);
+    }
   };
 
   const handleRecordPress = async () => {
@@ -61,17 +84,19 @@ export default function App() {
         return;
       }
 
+      console.log('Starting recording...');
       await AudioService.startRecording();
       setIsRecording(true);
-      console.log('Recording started');
+      console.log('Recording started successfully');
     } catch (error) {
       console.error('Failed to start recording:', error);
-      Alert.alert('Error', 'Failed to start recording. Please check microphone permissions.');
+      Alert.alert('Error', `Failed to start recording: ${error}`);
     }
   };
 
   const stopRecording = async () => {
     try {
+      console.log('Stopping recording...');
       const { uri, analysis } = await AudioService.stopRecording();
       setIsRecording(false);
 
@@ -85,7 +110,7 @@ export default function App() {
           analysis.peakDecibels
         );
 
-        console.log('Recording saved:', recordingId, analysis);
+        console.log('Recording saved with ID:', recordingId, analysis);
 
         Alert.alert(
           'Recording Saved',
@@ -96,7 +121,8 @@ export default function App() {
       }
     } catch (error) {
       console.error('Failed to stop recording:', error);
-      Alert.alert('Error', 'Failed to save recording');
+      Alert.alert('Error', `Failed to save recording: ${error}`);
+      setIsRecording(false);
     }
   };
 
@@ -116,7 +142,14 @@ export default function App() {
       <View style={styles.container}>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#0000ff" />
-          <Text style={{ marginTop: 10 }}>{errorMsg || 'Loading...'}</Text>
+          <Text style={styles.loadingText}>
+            {errorMsg || 'Loading...'}
+          </Text>
+          {errorMsg && (
+            <Text style={styles.errorDetails}>
+              Check console for details
+            </Text>
+          )}
         </View>
       </View>
     );
@@ -134,8 +167,14 @@ export default function App() {
       <MapComponent
         region={region}
         recordings={recordingsList}
+        viewMode={viewMode}
         onMarkerPress={handleMarkerPress}
       />
+
+      <ViewToggle currentMode={viewMode} onModeChange={setViewMode} />
+      <MapLegend visible={viewMode === 'heatmap' || viewMode === 'both'} />
+      <StatsPanel recordings={recordingsList} />
+
       <View style={styles.controlsContainer}>
         <RecordButton
           isRecording={isRecording}
@@ -156,6 +195,18 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    padding: 20,
+  },
+  loadingText: {
+    marginTop: 10,
+    fontSize: 16,
+    textAlign: 'center',
+  },
+  errorDetails: {
+    marginTop: 10,
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
   },
   controlsContainer: {
     position: 'absolute',
