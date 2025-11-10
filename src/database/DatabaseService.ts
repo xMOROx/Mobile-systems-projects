@@ -1,39 +1,38 @@
 import * as SQLite from 'expo-sqlite';
 import { RecordingEntry } from '../types';
+import { RecordingsRepository } from './RecordingsRepository';
+import { SQL_QUERIES } from './schema';
 
 class DatabaseService {
     private db: SQLite.SQLiteDatabase;
+    private recordingsRepo: RecordingsRepository;
 
     constructor() {
         this.db = SQLite.openDatabaseSync('soundmap.db');
+        this.recordingsRepo = new RecordingsRepository(this.db);
         this.initDatabase();
     }
 
     private initDatabase() {
         this.db.withTransactionSync(() => {
-
-            this.db.execSync(`
-        CREATE TABLE IF NOT EXISTS recordings (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          uri TEXT NOT NULL,
-          latitude REAL NOT NULL,
-          longitude REAL NOT NULL,
-          timestamp INTEGER NOT NULL,
-          duration REAL,
-          averageDecibels REAL,
-          peakDecibels REAL
-        );
-      `);
+            this.db.execSync(SQL_QUERIES.CREATE_RECORDINGS_TABLE);
         });
     }
 
     getAllRecordings(): RecordingEntry[] {
-        try {
-            return this.db.getAllSync<RecordingEntry>('SELECT * FROM recordings ORDER BY timestamp DESC');
-        } catch (error) {
-            console.error('Error fetching recordings:', error);
-            return [];
-        }
+        return this.recordingsRepo.findAll();
+    }
+
+    getRecordingById(id: number): RecordingEntry | null {
+        return this.recordingsRepo.findById(id);
+    }
+
+    getRecordingsByLocation(
+        latitude: number,
+        longitude: number,
+        radius?: number
+    ): RecordingEntry[] {
+        return this.recordingsRepo.findByLocation(latitude, longitude, radius);
     }
 
     saveRecording(
@@ -44,34 +43,45 @@ class DatabaseService {
         averageDecibels?: number,
         peakDecibels?: number
     ): number {
-        return this.db.withTransactionSync(() => {
-            const result = this.db.runSync(
-                `INSERT INTO recordings (uri, latitude, longitude, timestamp, duration, averageDecibels, peakDecibels) 
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                [uri, latitude, longitude, Date.now(), duration || null, averageDecibels || null, peakDecibels || null]
-            );
-            return result.lastInsertRowId;
-        });
+        return this.recordingsRepo.create(
+            uri,
+            latitude,
+            longitude,
+            duration,
+            averageDecibels,
+            peakDecibels
+        );
+    }
+
+    updateRecordingAnalysis(
+        id: number,
+        duration: number,
+        averageDecibels: number,
+        peakDecibels: number
+    ): void {
+        this.recordingsRepo.updateAnalysis(id, duration, averageDecibels, peakDecibels);
     }
 
     deleteRecording(id: number): void {
-        this.db.withTransactionSync(() => {
-            this.db.runSync('DELETE FROM recordings WHERE id = ?', [id]);
-        });
+        this.recordingsRepo.delete(id);
     }
 
-    getRecordingsByLocation(latitude: number, longitude: number, radius: number = 0.01): RecordingEntry[] {
-        try {
-            return this.db.getAllSync<RecordingEntry>(
-                `SELECT * FROM recordings 
-         WHERE latitude BETWEEN ? AND ? 
-         AND longitude BETWEEN ? AND ?`,
-                [latitude - radius, latitude + radius, longitude - radius, longitude + radius]
-            );
-        } catch (error) {
-            console.error('Error fetching recordings by location:', error);
-            return [];
-        }
+    deleteAllRecordings(): void {
+        this.recordingsRepo.deleteAll();
+    }
+
+    getRecordingsCount(): number {
+        return this.recordingsRepo.count();
+    }
+
+    closeDatabase(): void {
+        this.db.closeSync();
+    }
+
+    resetDatabase(): void {
+        this.db.withTransactionSync(() => {
+            this.recordingsRepo.deleteAll();
+        });
     }
 }
 
