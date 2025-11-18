@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, Text, View, ActivityIndicator, Alert, TouchableOpacity, StatusBar } from 'react-native';
 import { Region } from 'react-native-maps';
 import * as Location from 'expo-location';
+import { Ionicons } from '@expo/vector-icons';
 
 import DatabaseService from './src/database/DatabaseService';
 import LocationService from './src/services/LocationService';
 import AudioService from './src/services/AudioService';
-import { MapComponent } from './src/components/MapComponent';
+import { MapComponent, VisualizationMode } from './src/components/MapComponent';
 import { RecordButton } from './src/components/RecordButton';
 import { RecordingEntry } from './src/types';
 
@@ -16,6 +17,8 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingsList, setRecordingsList] = useState<RecordingEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [visualizationMode, setVisualizationMode] = useState<VisualizationMode>('markers');
+  const [region, setRegion] = useState<Region | undefined>(undefined);
 
   useEffect(() => {
     initializeApp();
@@ -30,6 +33,12 @@ export default function App() {
       const currentLocation = await LocationService.getCurrentLocation();
       if (currentLocation) {
         setLocation(currentLocation);
+        setRegion({
+          latitude: currentLocation.coords.latitude,
+          longitude: currentLocation.coords.longitude,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        });
       } else {
         setErrorMsg('Could not fetch location. Please check GPS and permissions.');
       }
@@ -111,7 +120,28 @@ export default function App() {
     );
   };
 
-  if (isLoading || !location) {
+  const toggleVisualizationMode = () => {
+    setVisualizationMode(current => {
+      if (current === 'markers') return 'heatmap';
+      if (current === 'heatmap') return 'both';
+      return 'markers';
+    });
+  };
+
+  const recenterMap = async () => {
+    const currentLocation = await LocationService.getCurrentLocation();
+    if (currentLocation) {
+      setLocation(currentLocation);
+      setRegion({
+        latitude: currentLocation.coords.latitude,
+        longitude: currentLocation.coords.longitude,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
+      });
+    }
+  };
+
+  if (isLoading || !region) {
     return (
       <View style={styles.container}>
         <View style={styles.loadingContainer}>
@@ -122,21 +152,31 @@ export default function App() {
     );
   }
 
-  const region: Region = {
-    latitude: location.coords.latitude,
-    longitude: location.coords.longitude,
-    latitudeDelta: 0.01,
-    longitudeDelta: 0.01,
-  };
-
   return (
     <View style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
       <MapComponent
         region={region}
         recordings={recordingsList}
         onMarkerPress={handleMarkerPress}
+        visualizationMode={visualizationMode}
       />
-      <View style={styles.controlsContainer}>
+
+      <View style={styles.rightControls}>
+        <TouchableOpacity style={styles.controlButton} onPress={toggleVisualizationMode}>
+          <Ionicons
+            name={visualizationMode === 'heatmap' ? "flame" : visualizationMode === 'both' ? "layers" : "location"}
+            size={24}
+            color="#333"
+          />
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.controlButton} onPress={recenterMap}>
+          <Ionicons name="locate" size={24} color="#333" />
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.bottomControls}>
         <RecordButton
           isRecording={isRecording}
           onPress={handleRecordPress}
@@ -150,16 +190,36 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#000',
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#fff',
   },
-  controlsContainer: {
+  rightControls: {
     position: 'absolute',
-    bottom: 30,
+    top: 60,
+    right: 20,
+    gap: 15,
+  },
+  controlButton: {
+    backgroundColor: 'white',
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+  bottomControls: {
+    position: 'absolute',
+    bottom: 40,
     width: '100%',
     alignItems: 'center',
     justifyContent: 'center',

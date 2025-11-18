@@ -1,5 +1,12 @@
 import * as SQLite from 'expo-sqlite';
 import { RecordingEntry } from '../types';
+import {
+    CREATE_TABLE_RECORDINGS,
+    SELECT_ALL_RECORDINGS,
+    INSERT_RECORDING,
+    DELETE_RECORDING,
+    SELECT_RECORDINGS_BY_LOCATION
+} from './queries';
 
 class DatabaseService {
     private db: SQLite.SQLiteDatabase;
@@ -11,25 +18,13 @@ class DatabaseService {
 
     private initDatabase() {
         this.db.withTransactionSync(() => {
-
-            this.db.execSync(`
-        CREATE TABLE IF NOT EXISTS recordings (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          uri TEXT NOT NULL,
-          latitude REAL NOT NULL,
-          longitude REAL NOT NULL,
-          timestamp INTEGER NOT NULL,
-          duration REAL,
-          averageDecibels REAL,
-          peakDecibels REAL
-        );
-      `);
+            this.db.execSync(CREATE_TABLE_RECORDINGS);
         });
     }
 
     getAllRecordings(): RecordingEntry[] {
         try {
-            return this.db.getAllSync<RecordingEntry>('SELECT * FROM recordings ORDER BY timestamp DESC');
+            return this.db.getAllSync<RecordingEntry>(SELECT_ALL_RECORDINGS);
         } catch (error) {
             console.error('Error fetching recordings:', error);
             return [];
@@ -44,28 +39,27 @@ class DatabaseService {
         averageDecibels?: number,
         peakDecibels?: number
     ): number {
-        return this.db.withTransactionSync(() => {
+        let insertId = 0;
+        this.db.withTransactionSync(() => {
             const result = this.db.runSync(
-                `INSERT INTO recordings (uri, latitude, longitude, timestamp, duration, averageDecibels, peakDecibels) 
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                INSERT_RECORDING,
                 [uri, latitude, longitude, Date.now(), duration || null, averageDecibels || null, peakDecibels || null]
             );
-            return result.lastInsertRowId;
+            insertId = result.lastInsertRowId;
         });
+        return insertId;
     }
 
     deleteRecording(id: number): void {
         this.db.withTransactionSync(() => {
-            this.db.runSync('DELETE FROM recordings WHERE id = ?', [id]);
+            this.db.runSync(DELETE_RECORDING, [id]);
         });
     }
 
     getRecordingsByLocation(latitude: number, longitude: number, radius: number = 0.01): RecordingEntry[] {
         try {
             return this.db.getAllSync<RecordingEntry>(
-                `SELECT * FROM recordings 
-         WHERE latitude BETWEEN ? AND ? 
-         AND longitude BETWEEN ? AND ?`,
+                SELECT_RECORDINGS_BY_LOCATION,
                 [latitude - radius, latitude + radius, longitude - radius, longitude + radius]
             );
         } catch (error) {
