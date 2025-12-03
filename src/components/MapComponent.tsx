@@ -6,6 +6,17 @@ import { getNoiseColor, NOISE_LEVELS } from './NoiseLegend';
 
 export type VisualizationMode = 'markers' | 'heatmap' | 'both';
 
+// Noise zone visualization constants
+const MIN_ZONE_RADIUS = 30;           // Minimum radius in meters
+const MAX_ZONE_RADIUS = 150;          // Maximum radius in meters
+const ZONE_RADIUS_BASE_DB = 40;       // Base dB level for radius calculation
+const ZONE_RADIUS_MULTIPLIER = 3;     // Multiplier for radius scaling
+const ZONE_FILL_OPACITY = '40';       // Hex opacity value (25%)
+
+// Heatmap weight normalization constants
+const MIN_DB_LEVEL = 30;              // Minimum dB level for normalization
+const DB_RANGE = 60;                  // dB range for normalization (30-90 dB)
+
 interface MapComponentProps {
     region: Region;
     recordings: RecordingEntry[];
@@ -122,7 +133,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 ...r,
                 color: getNoiseColor(r.averageDecibels!),
                 // Radius in meters - larger for louder sounds to show impact area
-                radius: Math.max(30, Math.min(150, (r.averageDecibels! - 40) * 3)),
+                radius: Math.max(MIN_ZONE_RADIUS, Math.min(MAX_ZONE_RADIUS, (r.averageDecibels! - ZONE_RADIUS_BASE_DB) * ZONE_RADIUS_MULTIPLIER)),
             }));
     }, [recordings]);
 
@@ -132,8 +143,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             .map(r => ({
                 latitude: r.latitude,
                 longitude: r.longitude,
-                // Normalize weight to 0-1 range based on dB levels (30-90 dB range)
-                weight: Math.min(1, Math.max(0, (r.averageDecibels! - 30) / 60))
+                // Normalize weight to 0-1 range based on dB levels
+                weight: Math.min(1, Math.max(0, (r.averageDecibels! - MIN_DB_LEVEL) / DB_RANGE))
             }));
     }, [recordings]);
 
@@ -186,7 +197,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                     key={`zone-${zone.id}`}
                     center={{ latitude: zone.latitude, longitude: zone.longitude }}
                     radius={zone.radius}
-                    fillColor={`${zone.color}40`}
+                    fillColor={`${zone.color}${ZONE_FILL_OPACITY}`}
                     strokeColor={zone.color}
                     strokeWidth={2}
                 />

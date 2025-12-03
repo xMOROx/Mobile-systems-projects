@@ -31,7 +31,7 @@ export const NoiseLegend: React.FC<NoiseLegendProps> = ({ visible = true }) => {
 
     return (
         <View style={styles.container}>
-            <Text style={styles.title}>Lden dB(A)</Text>
+            <Text style={styles.title}>Noise Level dB(A)</Text>
             {NOISE_LEVELS.map((level, index) => (
                 <View key={index} style={styles.legendItem}>
                     <View style={[styles.colorBox, { backgroundColor: level.color }]} />
