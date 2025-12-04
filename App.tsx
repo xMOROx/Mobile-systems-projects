@@ -158,7 +158,7 @@ export default function App() {
         recordings={filteredRecordings}
       />
 
-      {/* Timeline for historical data */}
+      {/* Timeline */}
       <TimelineSlider
         recordings={recordingsList}
         selectedTimestamp={selectedTimestamp}
