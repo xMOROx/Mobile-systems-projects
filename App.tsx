@@ -10,8 +10,11 @@ import AudioService from './src/services/AudioService';
 import { MapComponent, VisualizationMode } from './src/components/MapComponent';
 import { RecordButton } from './src/components/RecordButton';
 import { NoiseLegend } from './src/components/NoiseLegend';
-import { TimelineSlider, TimeRange, getTimeRangeStart } from './src/components/TimelineSlider';
+import { TimelineSlider } from './src/components/TimelineSlider';
 import { RecordingEntry } from './src/types';
+
+// Time window for filtering recordings (±5 minutes from selected timestamp)
+const TIME_WINDOW_MS = 5 * 60 * 1000;
 
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
@@ -21,15 +24,19 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [visualizationMode, setVisualizationMode] = useState<VisualizationMode>('heatmap');
   const [region, setRegion] = useState<Region | undefined>(undefined);
-  const [selectedTimeRange, setSelectedTimeRange] = useState<TimeRange>('all');
+  const [selectedTimestamp, setSelectedTimestamp] = useState<number | null>(null);
   const [showLegend, setShowLegend] = useState(true);
   const [showTimeline, setShowTimeline] = useState(true);
 
-  // Filter recordings based on selected time range
+  // Filter recordings based on selected timestamp (show recordings within ±5 minutes)
   const filteredRecordings = useMemo(() => {
-    const startTime = getTimeRangeStart(selectedTimeRange);
-    return recordingsList.filter(r => r.timestamp >= startTime);
-  }, [recordingsList, selectedTimeRange]);
+    if (selectedTimestamp === null) {
+      return recordingsList; // Show all recordings when no timestamp selected
+    }
+    return recordingsList.filter(r => 
+      Math.abs(r.timestamp - selectedTimestamp) <= TIME_WINDOW_MS
+    );
+  }, [recordingsList, selectedTimestamp]);
 
   useEffect(() => {
     initializeApp();
@@ -175,10 +182,9 @@ export default function App() {
 
       {/* Timeline for historical data */}
       <TimelineSlider
-        selectedRange={selectedTimeRange}
-        onRangeChange={setSelectedTimeRange}
-        recordingCount={recordingsList.length}
-        filteredCount={filteredRecordings.length}
+        recordings={recordingsList}
+        selectedTimestamp={selectedTimestamp}
+        onTimestampChange={setSelectedTimestamp}
         visible={showTimeline}
       />
 
