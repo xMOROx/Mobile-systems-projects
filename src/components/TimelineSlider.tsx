@@ -229,9 +229,9 @@ export const getTimeRangeStart = (range: TimeRange): number => {
 const styles = StyleSheet.create({
     container: {
         position: 'absolute',
-        top: 60,
+        bottom: 120,
         left: 15,
-        right: 80,
+        right: 15,
         backgroundColor: 'rgba(255, 255, 255, 0.95)',
         borderRadius: 12,
         padding: 12,
