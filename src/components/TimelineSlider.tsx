@@ -1,6 +1,5 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, PanResponder, Animated, GestureResponderEvent, LayoutChangeEvent } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { StyleSheet, View, Text, LayoutChangeEvent, ScrollView, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { RecordingEntry } from '../types';
 
 interface TimelineSliderProps {
@@ -10,23 +9,17 @@ interface TimelineSliderProps {
     visible?: boolean;
 }
 
-// Format timestamp to readable time
-const formatTime = (timestamp: number): string => {
-    const date = new Date(timestamp);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-};
+// Constants for timeline
+const TICK_INTERVAL_MINUTES = 5; // Tick every 5 minutes
+const MINUTE_WIDTH = 12; // Width per minute in pixels
+const TICK_HEIGHT = 15;
+const SMALL_TICK_HEIGHT = 8;
 
-// Format timestamp to readable date and time
-const formatDateTime = (timestamp: number): string => {
-    const date = new Date(timestamp);
-    const today = new Date();
-    const isToday = date.toDateString() === today.toDateString();
-    
-    if (isToday) {
-        return `Today ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-    }
-    return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + 
-           ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+// Format time for display (H:MM format)
+const formatTimeLabel = (date: Date): string => {
+    const hours = date.getHours();
+    const minutes = date.getMinutes();
+    return `${hours}:${minutes.toString().padStart(2, '0')}`;
 };
 
 export const TimelineSlider: React.FC<TimelineSliderProps> = ({
@@ -35,172 +28,146 @@ export const TimelineSlider: React.FC<TimelineSliderProps> = ({
     onTimestampChange,
     visible = true,
 }) => {
-    const [sliderWidth, setSliderWidth] = useState(0);
-    const [isDragging, setIsDragging] = useState(false);
-    const sliderPosition = useRef(new Animated.Value(0)).current;
+    const [containerWidth, setContainerWidth] = useState(0);
+    const scrollViewRef = useRef<ScrollView>(null);
+    const isInitialized = useRef(false);
     
-    // Calculate time bounds from recordings
-    const { minTime, maxTime, timeRange } = useMemo(() => {
-        if (recordings.length === 0) {
-            const now = Date.now();
-            return { minTime: now - 3600000, maxTime: now, timeRange: 3600000 }; // Default 1 hour
+    // Calculate time range - default to 1 hour centered on current time
+    const { startTime, endTime, totalMinutes, tickMarks } = useMemo(() => {
+        const now = new Date();
+        
+        // Round down to nearest 5 minutes for start
+        const startDate = new Date(now);
+        startDate.setMinutes(Math.floor(now.getMinutes() / 5) * 5 - 60, 0, 0); // 1 hour before
+        
+        // End time is 1 hour after start (2 hours total range)
+        const endDate = new Date(startDate);
+        endDate.setMinutes(startDate.getMinutes() + 120);
+        
+        const start = startDate.getTime();
+        const end = endDate.getTime();
+        const minutes = (end - start) / (60 * 1000);
+        
+        // Generate tick marks
+        const ticks: { time: Date; position: number; isMain: boolean }[] = [];
+        const currentDate = new Date(startDate);
+        let position = 0;
+        
+        while (currentDate.getTime() <= end) {
+            const isMain = currentDate.getMinutes() % TICK_INTERVAL_MINUTES === 0;
+            ticks.push({
+                time: new Date(currentDate),
+                position: position,
+                isMain: isMain,
+            });
+            currentDate.setMinutes(currentDate.getMinutes() + 1);
+            position += MINUTE_WIDTH;
         }
         
-        const timestamps = recordings.map(r => r.timestamp);
-        const min = Math.min(...timestamps);
-        const max = Math.max(...timestamps);
-        // Add some padding (5 minutes on each side)
-        const padding = 5 * 60 * 1000;
-        return { 
-            minTime: min - padding, 
-            maxTime: max + padding, 
-            timeRange: (max - min) + (padding * 2) 
+        return {
+            startTime: start,
+            endTime: end,
+            totalMinutes: minutes,
+            tickMarks: ticks,
         };
-    }, [recordings]);
+    }, []);
 
-    // Convert position to timestamp
-    const positionToTimestamp = useCallback((position: number): number => {
-        if (sliderWidth === 0) return minTime;
-        const ratio = Math.max(0, Math.min(1, position / sliderWidth));
-        return minTime + (ratio * timeRange);
-    }, [sliderWidth, minTime, timeRange]);
+    // Total width of the timeline
+    const timelineWidth = totalMinutes * MINUTE_WIDTH;
 
     // Convert timestamp to position
     const timestampToPosition = useCallback((timestamp: number): number => {
-        if (timeRange === 0) return 0;
-        const ratio = (timestamp - minTime) / timeRange;
-        return Math.max(0, Math.min(sliderWidth, ratio * sliderWidth));
-    }, [sliderWidth, minTime, timeRange]);
+        const minutes = (timestamp - startTime) / (60 * 1000);
+        return minutes * MINUTE_WIDTH;
+    }, [startTime]);
 
-    // Update slider position when selectedTimestamp changes externally
+    // Convert position to timestamp
+    const positionToTimestamp = useCallback((position: number): number => {
+        const minutes = position / MINUTE_WIDTH;
+        return startTime + (minutes * 60 * 1000);
+    }, [startTime]);
+
+    // Initialize to current time on first render with valid containerWidth
     useEffect(() => {
-        if (selectedTimestamp !== null && !isDragging) {
-            const position = timestampToPosition(selectedTimestamp);
-            sliderPosition.setValue(position);
+        if (containerWidth > 0 && !isInitialized.current) {
+            isInitialized.current = true;
+            const now = Date.now();
+            onTimestampChange(now);
+            
+            // Scroll to center the current time
+            const position = timestampToPosition(now);
+            const scrollX = Math.max(0, position - containerWidth / 2);
+            scrollViewRef.current?.scrollTo({ x: scrollX, animated: false });
         }
-    }, [selectedTimestamp, timestampToPosition, isDragging]);
+    }, [containerWidth, onTimestampChange, timestampToPosition]);
 
-    // Pan responder for dragging - uses locationX which is relative to the slider container
-    const panResponder = useRef(
-        PanResponder.create({
-            onStartShouldSetPanResponder: () => true,
-            onMoveShouldSetPanResponder: () => true,
-            onPanResponderGrant: (evt: GestureResponderEvent) => {
-                setIsDragging(true);
-                const touchX = evt.nativeEvent.locationX;
-                sliderPosition.setValue(Math.max(0, Math.min(touchX, sliderWidth || 200)));
-                const timestamp = positionToTimestamp(touchX);
-                onTimestampChange(timestamp);
-            },
-            onPanResponderMove: (evt: GestureResponderEvent) => {
-                // Use locationX which is relative to the slider container
-                const touchX = evt.nativeEvent.locationX;
-                const newPosition = Math.max(0, Math.min(sliderWidth || 200, touchX));
-                sliderPosition.setValue(newPosition);
-                const timestamp = positionToTimestamp(newPosition);
-                onTimestampChange(timestamp);
-            },
-            onPanResponderRelease: () => {
-                setIsDragging(false);
-            },
-        })
-    ).current;
-
-    // Calculate marker positions for recordings
-    const recordingMarkers = useMemo(() => {
-        return recordings.map(recording => ({
-            id: recording.id,
-            position: timestampToPosition(recording.timestamp),
-            decibels: recording.averageDecibels,
-        }));
-    }, [recordings, timestampToPosition]);
-
-    const handleLayout = (event: LayoutChangeEvent) => {
-        setSliderWidth(event.nativeEvent.layout.width);
+    const handleContainerLayout = (event: LayoutChangeEvent) => {
+        setContainerWidth(event.nativeEvent.layout.width);
     };
 
-    const handleShowAll = () => {
-        onTimestampChange(null);
-    };
-
-    const handleShowLatest = () => {
-        if (recordings.length > 0) {
-            const latestTimestamp = Math.max(...recordings.map(r => r.timestamp));
-            onTimestampChange(latestTimestamp);
-        }
+    // Handle scroll end to update timestamp
+    const handleScrollEnd = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+        const scrollX = event.nativeEvent.contentOffset.x;
+        const centerPosition = scrollX + containerWidth / 2;
+        const timestamp = positionToTimestamp(centerPosition);
+        const clampedTimestamp = Math.max(startTime, Math.min(endTime, timestamp));
+        onTimestampChange(clampedTimestamp);
     };
 
     if (!visible) return null;
 
+    // Current selected time display
+    const selectedDate = selectedTimestamp ? new Date(selectedTimestamp) : new Date();
+    const displayTime = formatTimeLabel(selectedDate);
+
     return (
         <View style={styles.container}>
-            <View style={styles.header}>
-                <Ionicons name="time" size={16} color="#333" />
-                <Text style={styles.headerText}>Timeline</Text>
-                <View style={styles.headerButtons}>
-                    <TouchableOpacity 
-                        style={[styles.headerButton, selectedTimestamp === null && styles.headerButtonActive]}
-                        onPress={handleShowAll}
-                    >
-                        <Text style={[styles.headerButtonText, selectedTimestamp === null && styles.headerButtonTextActive]}>
-                            All
-                        </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity 
-                        style={styles.headerButton}
-                        onPress={handleShowLatest}
-                    >
-                        <Text style={styles.headerButtonText}>Latest</Text>
-                    </TouchableOpacity>
-                </View>
-            </View>
-
-            {/* Time labels */}
-            <View style={styles.timeLabels}>
-                <Text style={styles.timeLabel}>{formatTime(minTime)}</Text>
-                <Text style={styles.timeLabel}>{formatTime(maxTime)}</Text>
-            </View>
-
-            {/* Slider track */}
-            <View 
-                style={styles.sliderContainer} 
-                onLayout={handleLayout}
-                {...panResponder.panHandlers}
-            >
-                <View style={styles.sliderTrack}>
-                    {/* Recording markers */}
-                    {recordingMarkers.map(marker => (
-                        <View
-                            key={marker.id}
-                            style={[
-                                styles.recordingMarker,
-                                { left: marker.position - 3 },
-                                (marker.decibels !== null && marker.decibels !== undefined && marker.decibels > 70) ? styles.recordingMarkerLoud : undefined,
-                            ]}
-                        />
-                    ))}
-                </View>
-                
-                {/* Draggable thumb */}
-                {selectedTimestamp !== null && (
-                    <Animated.View 
-                        style={[
-                            styles.sliderThumb,
-                            { transform: [{ translateX: sliderPosition }] }
-                        ]}
-                    >
-                        <View style={styles.thumbInner} />
-                    </Animated.View>
-                )}
-            </View>
-
             {/* Current time display */}
-            <View style={styles.timeInfo}>
-                <Text style={styles.timeInfoText}>
-                    {selectedTimestamp !== null
-                        ? formatDateTime(selectedTimestamp)
-                        : `Showing all ${recordings.length} recordings`}
-                </Text>
+            <View style={styles.currentTimeContainer}>
+                <Text style={styles.currentTimeText}>{displayTime}</Text>
+            </View>
+
+            {/* Timeline with scroll */}
+            <View style={styles.timelineContainer} onLayout={handleContainerLayout}>
+                {/* Center indicator line */}
+                <View style={styles.centerIndicator} />
+                
+                <ScrollView
+                    ref={scrollViewRef}
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    onMomentumScrollEnd={handleScrollEnd}
+                    onScrollEndDrag={handleScrollEnd}
+                    contentContainerStyle={{ width: timelineWidth }}
+                    decelerationRate="fast"
+                    snapToInterval={MINUTE_WIDTH}
+                >
+                    <View style={styles.ticksContainer}>
+                        {/* Main horizontal line */}
+                        <View style={styles.mainLine} />
+                        
+                        {/* Tick marks and labels */}
+                        {tickMarks.filter(tick => tick.isMain).map((tick, index) => (
+                            <View 
+                                key={index} 
+                                style={[styles.tickContainer, { left: tick.position }]}
+                            >
+                                <View style={styles.tickMark} />
+                                <Text style={styles.tickLabel}>
+                                    {formatTimeLabel(tick.time)}
+                                </Text>
+                            </View>
+                        ))}
+                        
+                        {/* Small tick marks (every minute) */}
+                        {tickMarks.filter(tick => !tick.isMain).map((tick, index) => (
+                            <View 
+                                key={`small-${index}`} 
+                                style={[styles.smallTickMark, { left: tick.position }]}
+                            />
+                        ))}
+                    </View>
+                </ScrollView>
             </View>
         </View>
     );
@@ -230,108 +197,73 @@ const styles = StyleSheet.create({
     container: {
         position: 'absolute',
         bottom: 120,
-        left: 15,
-        right: 15,
+        left: 0,
+        right: 0,
         backgroundColor: 'rgba(255, 255, 255, 0.95)',
-        borderRadius: 12,
-        padding: 12,
+        paddingVertical: 10,
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.25,
-        shadowRadius: 3.84,
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 3,
         elevation: 5,
     },
-    header: {
-        flexDirection: 'row',
+    currentTimeContainer: {
         alignItems: 'center',
         marginBottom: 8,
     },
-    headerText: {
-        fontSize: 14,
-        fontWeight: '600',
+    currentTimeText: {
+        fontSize: 18,
+        fontWeight: 'bold',
         color: '#333',
-        marginLeft: 6,
-        flex: 1,
     },
-    headerButtons: {
-        flexDirection: 'row',
-        gap: 6,
-    },
-    headerButton: {
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 12,
-        backgroundColor: '#f0f0f0',
-    },
-    headerButtonActive: {
-        backgroundColor: '#4A90D9',
-    },
-    headerButtonText: {
-        fontSize: 11,
-        fontWeight: '500',
-        color: '#666',
-    },
-    headerButtonTextActive: {
-        color: '#fff',
-    },
-    timeLabels: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        marginBottom: 4,
-    },
-    timeLabel: {
-        fontSize: 10,
-        color: '#888',
-    },
-    sliderContainer: {
-        height: 40,
-        justifyContent: 'center',
-    },
-    sliderTrack: {
-        height: 6,
-        backgroundColor: '#e0e0e0',
-        borderRadius: 3,
+    timelineContainer: {
+        height: 60,
         position: 'relative',
     },
-    recordingMarker: {
+    centerIndicator: {
         position: 'absolute',
-        width: 6,
-        height: 12,
-        backgroundColor: '#4A90D9',
-        borderRadius: 2,
-        top: -3,
+        left: '50%',
+        top: 0,
+        bottom: 0,
+        width: 2,
+        backgroundColor: '#FF0000',
+        zIndex: 10,
     },
-    recordingMarkerLoud: {
-        backgroundColor: '#FF6B6B',
+    ticksContainer: {
+        flex: 1,
+        position: 'relative',
     },
-    sliderThumb: {
+    mainLine: {
         position: 'absolute',
-        width: 24,
-        height: 24,
-        borderRadius: 12,
-        backgroundColor: '#4A90D9',
-        justifyContent: 'center',
+        top: 20,
+        left: 0,
+        right: 0,
+        height: 2,
+        backgroundColor: '#000',
+    },
+    tickContainer: {
+        position: 'absolute',
+        top: 0,
         alignItems: 'center',
-        marginLeft: -12,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.3,
-        shadowRadius: 3,
-        elevation: 4,
+        width: 50,
+        marginLeft: -25,
     },
-    thumbInner: {
-        width: 10,
-        height: 10,
-        borderRadius: 5,
-        backgroundColor: '#fff',
+    tickMark: {
+        width: 2,
+        height: TICK_HEIGHT,
+        backgroundColor: '#000',
+        marginTop: 5,
     },
-    timeInfo: {
-        marginTop: 8,
-        alignItems: 'center',
+    tickLabel: {
+        fontSize: 10,
+        color: '#000',
+        marginTop: 4,
     },
-    timeInfoText: {
-        fontSize: 12,
-        color: '#333',
-        fontWeight: '500',
+    smallTickMark: {
+        position: 'absolute',
+        top: 12,
+        width: 1,
+        height: SMALL_TICK_HEIGHT,
+        backgroundColor: '#000',
     },
 });
