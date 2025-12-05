@@ -45,8 +45,8 @@ export const NoiseLegend: React.FC<NoiseLegendProps> = ({ visible = true }) => {
 const styles = StyleSheet.create({
     container: {
         position: 'absolute',
-        bottom: 120,
-        right: 15,
+        top: 60,
+        left: 15,
         backgroundColor: 'rgba(255, 255, 255, 0.95)',
         borderRadius: 8,
         padding: 10,

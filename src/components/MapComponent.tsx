@@ -1,10 +1,8 @@
 import React, { useMemo } from 'react';
-import { StyleSheet, View, Text } from 'react-native';
-import MapView, { Marker, Region, Heatmap, PROVIDER_GOOGLE, Callout, Circle } from 'react-native-maps';
+import { StyleSheet } from 'react-native';
+import MapView, { Region, Heatmap, PROVIDER_GOOGLE, Circle } from 'react-native-maps';
 import { RecordingEntry } from '../types';
-import { getNoiseColor, NOISE_LEVELS } from './NoiseLegend';
-
-export type VisualizationMode = 'markers' | 'heatmap' | 'both';
+import { getNoiseColor } from './NoiseLegend';
 
 // Noise zone visualization constants
 const MIN_ZONE_RADIUS = 30;           // Minimum radius in meters
@@ -20,8 +18,6 @@ const DB_RANGE = 60;                  // dB range for normalization (30-90 dB)
 interface MapComponentProps {
     region: Region;
     recordings: RecordingEntry[];
-    onMarkerPress?: (recording: RecordingEntry) => void;
-    visualizationMode?: VisualizationMode;
 }
 
 const DARK_MAP_STYLE = [
@@ -117,14 +113,7 @@ const DARK_MAP_STYLE = [
 export const MapComponent: React.FC<MapComponentProps> = ({
     region,
     recordings,
-    onMarkerPress,
-    visualizationMode = 'markers'
 }) => {
-    const getMarkerColor = (avgDecibels?: number): string => {
-        if (!avgDecibels) return 'gray';
-        return getNoiseColor(avgDecibels);
-    };
-
     // Create noise zones with proper colors for heatmap visualization
     const noiseZones = useMemo(() => {
         return recordings
@@ -156,28 +145,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             provider={PROVIDER_GOOGLE}
             customMapStyle={DARK_MAP_STYLE}
         >
-            {(visualizationMode === 'markers' || visualizationMode === 'both') && recordings.map((rec) => (
-                <Marker
-                    key={rec.id}
-                    coordinate={{ latitude: rec.latitude, longitude: rec.longitude }}
-                    pinColor={getMarkerColor(rec.averageDecibels)}
-                    onCalloutPress={() => onMarkerPress?.(rec)}
-                >
-                    <Callout tooltip>
-                        <View style={styles.calloutContainer}>
-                            <Text style={styles.calloutTitle}>Recording #{rec.id}</Text>
-                            <Text style={styles.calloutText}>
-                                {rec.averageDecibels ? `${rec.averageDecibels.toFixed(1)} dB` : 'No data'}
-                            </Text>
-                            <Text style={styles.calloutDate}>
-                                {new Date(rec.timestamp).toLocaleTimeString()}
-                            </Text>
-                        </View>
-                    </Callout>
-                </Marker>
-            ))}
-
-            {(visualizationMode === 'heatmap' || visualizationMode === 'both') && heatmapPoints.length > 0 && (
+            {/* Heatmap visualization */}
+            {heatmapPoints.length > 0 && (
                 <Heatmap
                     points={heatmapPoints}
                     radius={40}
@@ -191,8 +160,8 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 />
             )}
 
-            {/* Add colored circles for noise zones visualization */}
-            {(visualizationMode === 'heatmap' || visualizationMode === 'both') && noiseZones.map((zone) => (
+            {/* Colored circles for noise zones visualization */}
+            {noiseZones.map((zone) => (
                 <Circle
                     key={`zone-${zone.id}`}
                     center={{ latitude: zone.latitude, longitude: zone.longitude }}
@@ -211,30 +180,4 @@ const styles = StyleSheet.create({
         width: '100%',
         height: '100%',
     },
-    calloutContainer: {
-        backgroundColor: 'white',
-        borderRadius: 6,
-        padding: 10,
-        width: 140,
-        alignItems: 'center',
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.25,
-        shadowRadius: 3.84,
-        elevation: 5,
-    },
-    calloutTitle: {
-        fontWeight: 'bold',
-        fontSize: 14,
-        marginBottom: 4,
-    },
-    calloutText: {
-        fontSize: 12,
-        color: '#333',
-    },
-    calloutDate: {
-        fontSize: 10,
-        color: '#666',
-        marginTop: 2,
-    }
 });

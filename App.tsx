@@ -7,11 +7,14 @@ import { Ionicons } from '@expo/vector-icons';
 import DatabaseService from './src/database/DatabaseService';
 import LocationService from './src/services/LocationService';
 import AudioService from './src/services/AudioService';
-import { MapComponent, VisualizationMode } from './src/components/MapComponent';
+import { MapComponent } from './src/components/MapComponent';
 import { RecordButton } from './src/components/RecordButton';
 import { NoiseLegend } from './src/components/NoiseLegend';
 import { TimelineSlider } from './src/components/TimelineSlider';
 import { RecordingEntry } from './src/types';
+
+// Time window for filtering recordings (±5 minutes from selected timestamp)
+const TIME_WINDOW_MS = 5 * 60 * 1000;
 
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
@@ -19,13 +22,12 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingsList, setRecordingsList] = useState<RecordingEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [visualizationMode, setVisualizationMode] = useState<VisualizationMode>('heatmap');
   const [region, setRegion] = useState<Region | undefined>(undefined);
   const [timeRange, setTimeRange] = useState<{ start: number; end: number }>({ start: 0, end: Date.now() });
   const [showLegend, setShowLegend] = useState(true);
   const [showTimeline, setShowTimeline] = useState(true);
 
-  // Filter recordings based on selected time range
+  // Filter recordings based on selected timestamp (show recordings within ±5 minutes)
   const filteredRecordings = useMemo(() => {
     if (timeRange.start === 0) {
       return recordingsList;
@@ -128,25 +130,6 @@ export default function App() {
     }
   };
 
-  const handleMarkerPress = (recording: RecordingEntry) => {
-    Alert.alert(
-      `Recording #${recording.id}`,
-      `Time: ${new Date(recording.timestamp).toLocaleString()}\n` +
-      `Duration: ${recording.duration?.toFixed(1) || 'N/A'}s\n` +
-      `Average: ${recording.averageDecibels?.toFixed(1) || 'N/A'} dB\n` +
-      `Peak: ${recording.peakDecibels?.toFixed(1) || 'N/A'} dB`,
-      [{ text: 'OK' }]
-    );
-  };
-
-  const toggleVisualizationMode = () => {
-    setVisualizationMode(current => {
-      if (current === 'markers') return 'heatmap';
-      if (current === 'heatmap') return 'both';
-      return 'markers';
-    });
-  };
-
   const recenterMap = async () => {
     const currentLocation = await LocationService.getCurrentLocation();
     if (currentLocation) {
@@ -177,12 +160,10 @@ export default function App() {
       <MapComponent
         region={region}
         recordings={filteredRecordings}
-        onMarkerPress={handleMarkerPress}
-        visualizationMode={visualizationMode}
       />
 
       {/* Noise level legend */}
-      <NoiseLegend visible={showLegend && (visualizationMode === 'heatmap' || visualizationMode === 'both')} />
+      <NoiseLegend visible={showLegend} />
 
       <View style={styles.rightControls}>
         <TouchableOpacity style={styles.controlButton} onPress={toggleVisualizationMode}>
