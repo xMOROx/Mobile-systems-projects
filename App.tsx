@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { StyleSheet, Text, View, ActivityIndicator, Alert, TouchableOpacity, StatusBar } from 'react-native';
 import { Region } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -10,7 +10,7 @@ import AudioService from './src/services/AudioService';
 import { MapComponent, VisualizationMode } from './src/components/MapComponent';
 import { RecordButton } from './src/components/RecordButton';
 import { NoiseLegend } from './src/components/NoiseLegend';
-import { TimelineSlider, TimeRange, getTimeRangeStart } from './src/components/TimelineSlider';
+import { TimelineSlider } from './src/components/TimelineSlider';
 import { RecordingEntry } from './src/types';
 
 export default function App() {
@@ -21,15 +21,23 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [visualizationMode, setVisualizationMode] = useState<VisualizationMode>('heatmap');
   const [region, setRegion] = useState<Region | undefined>(undefined);
-  const [selectedTimeRange, setSelectedTimeRange] = useState<TimeRange>('all');
+  const [timeRange, setTimeRange] = useState<{ start: number; end: number }>({ start: 0, end: Date.now() });
   const [showLegend, setShowLegend] = useState(true);
   const [showTimeline, setShowTimeline] = useState(true);
 
   // Filter recordings based on selected time range
   const filteredRecordings = useMemo(() => {
-    const startTime = getTimeRangeStart(selectedTimeRange);
-    return recordingsList.filter(r => r.timestamp >= startTime);
-  }, [recordingsList, selectedTimeRange]);
+    if (timeRange.start === 0) {
+      return recordingsList;
+    }
+    return recordingsList.filter(r =>
+      r.timestamp >= timeRange.start && r.timestamp <= timeRange.end
+    );
+  }, [recordingsList, timeRange]);
+
+  const handleTimeChange = useCallback((startTime: number, endTime: number) => {
+    setTimeRange({ start: startTime, end: endTime });
+  }, []);
 
   useEffect(() => {
     initializeApp();
@@ -173,15 +181,6 @@ export default function App() {
         visualizationMode={visualizationMode}
       />
 
-      {/* Timeline for historical data */}
-      <TimelineSlider
-        selectedRange={selectedTimeRange}
-        onRangeChange={setSelectedTimeRange}
-        recordingCount={recordingsList.length}
-        filteredCount={filteredRecordings.length}
-        visible={showTimeline}
-      />
-
       {/* Noise level legend */}
       <NoiseLegend visible={showLegend && (visualizationMode === 'heatmap' || visualizationMode === 'both')} />
 
@@ -194,15 +193,15 @@ export default function App() {
           />
         </TouchableOpacity>
 
-        <TouchableOpacity 
-          style={[styles.controlButton, showLegend && styles.controlButtonActive]} 
+        <TouchableOpacity
+          style={[styles.controlButton, showLegend && styles.controlButtonActive]}
           onPress={() => setShowLegend(!showLegend)}
         >
           <Ionicons name="color-palette" size={24} color={showLegend ? "#4A90D9" : "#333"} />
         </TouchableOpacity>
 
-        <TouchableOpacity 
-          style={[styles.controlButton, showTimeline && styles.controlButtonActive]} 
+        <TouchableOpacity
+          style={[styles.controlButton, showTimeline && styles.controlButtonActive]}
           onPress={() => setShowTimeline(!showTimeline)}
         >
           <Ionicons name="time" size={24} color={showTimeline ? "#4A90D9" : "#333"} />
@@ -212,6 +211,14 @@ export default function App() {
           <Ionicons name="locate" size={24} color="#333" />
         </TouchableOpacity>
       </View>
+
+      {/* Timeline slider for historical data */}
+      <TimelineSlider
+        onTimeChange={handleTimeChange}
+        recordingCount={recordingsList.length}
+        filteredCount={filteredRecordings.length}
+        visible={showTimeline}
+      />
 
       <View style={styles.bottomControls}>
         <RecordButton
