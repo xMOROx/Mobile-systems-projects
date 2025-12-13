@@ -1,0 +1,183 @@
+import React, { useMemo } from 'react';
+import { StyleSheet } from 'react-native';
+import MapView, { Region, Heatmap, PROVIDER_GOOGLE, Circle } from 'react-native-maps';
+import { RecordingEntry } from '../types';
+import { getNoiseColor } from './NoiseLegend';
+
+// Noise zone visualization constants
+const MIN_ZONE_RADIUS = 30;           // Minimum radius in meters
+const MAX_ZONE_RADIUS = 150;          // Maximum radius in meters
+const ZONE_RADIUS_BASE_DB = 40;       // Base dB level for radius calculation
+const ZONE_RADIUS_MULTIPLIER = 3;     // Multiplier for radius scaling
+const ZONE_FILL_OPACITY = '40';       // Hex opacity value (25%)
+
+// Heatmap weight normalization constants
+const MIN_DB_LEVEL = 30;              // Minimum dB level for normalization
+const DB_RANGE = 60;                  // dB range for normalization (30-90 dB)
+
+interface MapComponentProps {
+    region: Region;
+    recordings: RecordingEntry[];
+}
+
+const DARK_MAP_STYLE = [
+    {
+        "elementType": "geometry",
+        "stylers": [{ "color": "#242f3e" }]
+    },
+    {
+        "elementType": "labels.text.fill",
+        "stylers": [{ "color": "#746855" }]
+    },
+    {
+        "elementType": "labels.text.stroke",
+        "stylers": [{ "color": "#242f3e" }]
+    },
+    {
+        "featureType": "administrative.locality",
+        "elementType": "labels.text.fill",
+        "stylers": [{ "color": "#d59563" }]
+    },
+    {
+        "featureType": "poi",
+        "elementType": "labels.text.fill",
+        "stylers": [{ "color": "#d59563" }]
+    },
+    {
+        "featureType": "poi.park",
+        "elementType": "geometry",
+        "stylers": [{ "color": "#263c3f" }]
+    },
+    {
+        "featureType": "poi.park",
+        "elementType": "labels.text.fill",
+        "stylers": [{ "color": "#6b9a76" }]
+    },
+    {
+        "featureType": "road",
+        "elementType": "geometry",
+        "stylers": [{ "color": "#38414e" }]
+    },
+    {
+        "featureType": "road",
+        "elementType": "geometry.stroke",
+        "stylers": [{ "color": "#212a37" }]
+    },
+    {
+        "featureType": "road",
+        "elementType": "labels.text.fill",
+        "stylers": [{ "color": "#9ca5b3" }]
+    },
+    {
+        "featureType": "road.highway",
+        "elementType": "geometry",
+        "stylers": [{ "color": "#746855" }]
+    },
+    {
+        "featureType": "road.highway",
+        "elementType": "geometry.stroke",
+        "stylers": [{ "color": "#1f2835" }]
+    },
+    {
+        "featureType": "road.highway",
+        "elementType": "labels.text.fill",
+        "stylers": [{ "color": "#f3d19c" }]
+    },
+    {
+        "featureType": "transit",
+        "elementType": "geometry",
+        "stylers": [{ "color": "#2f3948" }]
+    },
+    {
+        "featureType": "transit.station",
+        "elementType": "labels.text.fill",
+        "stylers": [{ "color": "#d59563" }]
+    },
+    {
+        "featureType": "water",
+        "elementType": "geometry",
+        "stylers": [{ "color": "#17263c" }]
+    },
+    {
+        "featureType": "water",
+        "elementType": "labels.text.fill",
+        "stylers": [{ "color": "#515c6d" }]
+    },
+    {
+        "featureType": "water",
+        "elementType": "labels.text.stroke",
+        "stylers": [{ "color": "#17263c" }]
+    }
+];
+
+export const MapComponent: React.FC<MapComponentProps> = ({
+    region,
+    recordings,
+}) => {
+    // Create noise zones with proper colors for heatmap visualization
+    const noiseZones = useMemo(() => {
+        return recordings
+            .filter(r => r.averageDecibels !== undefined && r.averageDecibels !== null)
+            .map(r => ({
+                ...r,
+                color: getNoiseColor(r.averageDecibels!),
+                // Radius in meters - larger for louder sounds to show impact area
+                radius: Math.max(MIN_ZONE_RADIUS, Math.min(MAX_ZONE_RADIUS, (r.averageDecibels! - ZONE_RADIUS_BASE_DB) * ZONE_RADIUS_MULTIPLIER)),
+            }));
+    }, [recordings]);
+
+    const heatmapPoints = useMemo(() => {
+        return recordings
+            .filter(r => r.averageDecibels !== undefined && r.averageDecibels !== null)
+            .map(r => ({
+                latitude: r.latitude,
+                longitude: r.longitude,
+                // Normalize weight to 0-1 range based on dB levels
+                weight: Math.min(1, Math.max(0, (r.averageDecibels! - MIN_DB_LEVEL) / DB_RANGE))
+            }));
+    }, [recordings]);
+
+    return (
+        <MapView
+            style={styles.map}
+            initialRegion={region}
+            showsUserLocation={true}
+            provider={PROVIDER_GOOGLE}
+            customMapStyle={DARK_MAP_STYLE}
+        >
+            {/* Heatmap visualization */}
+            {heatmapPoints.length > 0 && (
+                <Heatmap
+                    points={heatmapPoints}
+                    radius={40}
+                    opacity={0.7}
+                    gradient={{
+                        // Colors matching the noise map reference: green -> yellow -> orange -> red -> purple
+                        colors: ['#00CC00', '#66FF00', '#CCFF00', '#FFFF00', '#FFCC00', '#FF6600', '#FF0000', '#CC00CC'],
+                        startPoints: [0.1, 0.2, 0.3, 0.4, 0.5, 0.65, 0.8, 0.95],
+                        colorMapSize: 256
+                    }}
+                />
+            )}
+
+            {/* Colored circles for noise zones visualization */}
+            {noiseZones.map((zone) => (
+                <Circle
+                    key={`zone-${zone.id}`}
+                    center={{ latitude: zone.latitude, longitude: zone.longitude }}
+                    radius={zone.radius}
+                    fillColor={`${zone.color}${ZONE_FILL_OPACITY}`}
+                    strokeColor={zone.color}
+                    strokeWidth={2}
+                />
+            ))}
+        </MapView>
+    );
+};
+
+const styles = StyleSheet.create({
+    map: {
+        width: '100%',
+        height: '100%',
+    },
+});

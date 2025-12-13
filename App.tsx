@@ -1,164 +1,234 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
-import MapView, { Marker, Region } from 'react-native-maps';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { StyleSheet, Text, View, ActivityIndicator, Alert, TouchableOpacity, StatusBar } from 'react-native';
+import { Region } from 'react-native-maps';
 import * as Location from 'expo-location';
-import { Audio } from 'expo-av';
-import * as SQLite from 'expo-sqlite';
+import { Ionicons } from '@expo/vector-icons';
 
-interface RecordingEntry {
-  id: number;
-  uri: string;
-  latitude: number;
-  longitude: number;
-  timestamp: number;
-}
+import DatabaseService from './src/database/DatabaseService';
+import LocationService from './src/services/LocationService';
+import AudioService from './src/services/AudioService';
+import { MapComponent, VisualizationMode } from './src/components/MapComponent';
+import { RecordButton } from './src/components/RecordButton';
+import { NoiseLegend } from './src/components/NoiseLegend';
+import { TimelineSlider } from './src/components/TimelineSlider';
+import { RecordingEntry } from './src/types';
 
-const db = SQLite.openDatabaseSync('soundmap.db');
+// Time window for filtering recordings (±5 minutes from selected timestamp)
+const TIME_WINDOW_MS = 5 * 60 * 1000;
 
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [recording, setRecording] = useState<Audio.Recording | undefined>(undefined);
+  const [isRecording, setIsRecording] = useState(false);
   const [recordingsList, setRecordingsList] = useState<RecordingEntry[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [visualizationMode, setVisualizationMode] = useState<VisualizationMode>('heatmap');
+  const [region, setRegion] = useState<Region | undefined>(undefined);
+  const [timeRange, setTimeRange] = useState<{ start: number; end: number }>({ start: 0, end: Date.now() });
+  const [showLegend, setShowLegend] = useState(true);
+  const [showTimeline, setShowTimeline] = useState(true);
 
-  useEffect(() => {
-    db.withTransactionSync(() => {
-      db.execSync(
-        'CREATE TABLE IF NOT EXISTS recordings (id INTEGER PRIMARY KEY AUTOINCREMENT, uri TEXT, latitude REAL, longitude REAL, timestamp INTEGER);'
-      );
-    });
+  // Filter recordings based on selected timestamp (show recordings within ±5 minutes)
+  const filteredRecordings = useMemo(() => {
+    if (timeRange.start === 0) {
+      return recordingsList;
+    }
+    return recordingsList.filter(r =>
+      r.timestamp >= timeRange.start && r.timestamp <= timeRange.end
+    );
+  }, [recordingsList, timeRange]);
 
-    fetchRecordings();
-
-    (async () => {
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        setErrorMsg('Permission to access location was denied');
-        return;
-      }
-      try {
-        let currentLocation = await Location.getCurrentPositionAsync({});
-        setLocation(currentLocation);
-      } catch (error) {
-        setErrorMsg('Could not fetch location. Please check GPS.');
-      }
-    })();
+  const handleTimeChange = useCallback((startTime: number, endTime: number) => {
+    setTimeRange({ start: startTime, end: endTime });
   }, []);
 
-  const fetchRecordings = () => {
+  useEffect(() => {
+    initializeApp();
+  }, []);
+
+  const initializeApp = async () => {
     try {
-      const recordings = db.getAllSync<RecordingEntry>('SELECT * FROM recordings');
-      setRecordingsList(recordings);
+      // Załaduj nagrania z bazy
+      loadRecordings();
+
+      // Pobierz lokalizację
+      const currentLocation = await LocationService.getCurrentLocation();
+      if (currentLocation) {
+        setLocation(currentLocation);
+        setRegion({
+          latitude: currentLocation.coords.latitude,
+          longitude: currentLocation.coords.longitude,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        });
+      } else {
+        setErrorMsg('Could not fetch location. Please check GPS and permissions.');
+      }
     } catch (error) {
-      console.error('Error fetching recordings:', error);
+      console.error('Error initializing app:', error);
+      setErrorMsg('Error initializing application');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const saveRecordingToDB = (uri: string, loc: Location.LocationObject) => {
-    db.withTransactionSync(() => {
-      try {
-        const result = db.runSync(
-          'INSERT INTO recordings (uri, latitude, longitude, timestamp) values (?, ?, ?, ?)',
-          [uri, loc.coords.latitude, loc.coords.longitude, Date.now()]
-        );
-        console.log('Recording saved to DB with ID:', result.lastInsertRowId);
-        fetchRecordings();
-      } catch (error) {
-        console.error('Error saving recording:', error);
-        throw error;
+  const loadRecordings = () => {
+    const recordings = DatabaseService.getAllRecordings();
+    setRecordingsList(recordings);
+  };
+
+  const handleRecordPress = async () => {
+    if (isRecording) {
+      await stopRecording();
+    } else {
+      await startRecording();
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      if (!location) {
+        Alert.alert('Wait for location', 'Please wait until your location is determined.');
+        return;
       }
+
+      await AudioService.startRecording();
+      setIsRecording(true);
+      console.log('Recording started');
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      Alert.alert('Error', 'Failed to start recording. Please check microphone permissions.');
+    }
+  };
+
+  const stopRecording = async () => {
+    try {
+      const { uri, analysis } = await AudioService.stopRecording();
+      setIsRecording(false);
+
+      if (location) {
+        const recordingId = DatabaseService.saveRecording(
+          uri,
+          location.coords.latitude,
+          location.coords.longitude,
+          analysis.duration,
+          analysis.averageDecibels,
+          analysis.peakDecibels
+        );
+
+        console.log('Recording saved:', recordingId, analysis);
+
+        Alert.alert(
+          'Recording Saved',
+          `Duration: ${analysis.duration.toFixed(1)}s\nAvg: ${analysis.averageDecibels} dB\nPeak: ${analysis.peakDecibels} dB`
+        );
+
+        loadRecordings();
+      }
+    } catch (error) {
+      console.error('Failed to stop recording:', error);
+      Alert.alert('Error', 'Failed to save recording');
+    }
+  };
+
+  const handleMarkerPress = (recording: RecordingEntry) => {
+    Alert.alert(
+      `Recording #${recording.id}`,
+      `Time: ${new Date(recording.timestamp).toLocaleString()}\n` +
+      `Duration: ${recording.duration?.toFixed(1) || 'N/A'}s\n` +
+      `Average: ${recording.averageDecibels?.toFixed(1) || 'N/A'} dB\n` +
+      `Peak: ${recording.peakDecibels?.toFixed(1) || 'N/A'} dB`,
+      [{ text: 'OK' }]
+    );
+  };
+
+  const toggleVisualizationMode = () => {
+    setVisualizationMode(current => {
+      if (current === 'markers') return 'heatmap';
+      if (current === 'heatmap') return 'both';
+      return 'markers';
     });
   };
 
-  async function startRecording() {
-    try {
-      if (!location) {
-        Alert.alert("Wait for location", "Please wait until your location is determined.");
-        return;
-      }
-      console.log('Requesting permissions..');
-      await Audio.requestPermissionsAsync();
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
+  const recenterMap = async () => {
+    const currentLocation = await LocationService.getCurrentLocation();
+    if (currentLocation) {
+      setLocation(currentLocation);
+      setRegion({
+        latitude: currentLocation.coords.latitude,
+        longitude: currentLocation.coords.longitude,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
       });
-
-      console.log('Starting recording..');
-      const { recording: newRecording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
-      setRecording(newRecording);
-      console.log('Recording started');
-    } catch (err) {
-      console.error('Failed to start recording', err);
     }
-  }
+  };
 
-  async function stopRecording() {
-    if (!recording) return;
-
-    console.log('Stopping recording..');
-    try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      setRecording(undefined);
-
-      console.log('Recording stopped and stored at', uri);
-
-      if (location && uri) {
-        saveRecordingToDB(uri, location);
-      }
-    } catch (error) {
-      console.error('Error stopping recording', error);
-    }
-  }
-
-  let mapContent = (
-    <View style={styles.loadingContainer}>
-      <ActivityIndicator size="large" color="#0000ff" />
-      <Text style={{ marginTop: 10 }}>{errorMsg ? errorMsg : 'Loading map...'}</Text>
-    </View>
-  );
-
-  if (location) {
-    const initialRegion: Region = {
-      latitude: location.coords.latitude,
-      longitude: location.coords.longitude,
-      latitudeDelta: 0.01,
-      longitudeDelta: 0.01,
-    };
-
-    mapContent = (
-      <MapView
-        style={styles.map}
-        initialRegion={initialRegion}
-        showsUserLocation={true}
-      >
-        {recordingsList.map((rec) => (
-          <Marker
-            key={rec.id}
-            coordinate={{ latitude: rec.latitude, longitude: rec.longitude }}
-            title={`Recording #${rec.id}`}
-            description={`Time: ${new Date(rec.timestamp).toLocaleString()}`}
-            pinColor="red"
-          />
-        ))}
-      </MapView>
+  if (isLoading || !region) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#0000ff" />
+          <Text style={{ marginTop: 10 }}>{errorMsg || 'Loading...'}</Text>
+        </View>
+      </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      {mapContent}
-      <View style={styles.controlsContainer}>
-        <TouchableOpacity
-          style={[styles.recordButton, recording ? styles.recordingActive : null]}
-          onPress={recording ? stopRecording : startRecording}
-        >
-          <Text style={styles.recordButtonText}>
-            {recording ? 'STOP 🛑' : 'RECORD 🎙️'}
-          </Text>
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+      <MapComponent
+        region={region}
+        recordings={filteredRecordings}
+        onMarkerPress={handleMarkerPress}
+        visualizationMode={visualizationMode}
+      />
+
+      {/* Noise level legend */}
+      <NoiseLegend visible={showLegend && (visualizationMode === 'heatmap' || visualizationMode === 'both')} />
+
+      <View style={styles.rightControls}>
+        <TouchableOpacity style={styles.controlButton} onPress={toggleVisualizationMode}>
+          <Ionicons
+            name={visualizationMode === 'heatmap' ? "flame" : visualizationMode === 'both' ? "layers" : "location"}
+            size={24}
+            color="#333"
+          />
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.controlButton, showLegend && styles.controlButtonActive]}
+          onPress={() => setShowLegend(!showLegend)}
+        >
+          <Ionicons name="color-palette" size={24} color={showLegend ? "#4A90D9" : "#333"} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.controlButton, showTimeline && styles.controlButtonActive]}
+          onPress={() => setShowTimeline(!showTimeline)}
+        >
+          <Ionicons name="time" size={24} color={showTimeline ? "#4A90D9" : "#333"} />
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.controlButton} onPress={recenterMap}>
+          <Ionicons name="locate" size={24} color="#333" />
+        </TouchableOpacity>
+      </View>
+
+      {/* Timeline slider for historical data */}
+      <TimelineSlider
+        onTimeChange={handleTimeChange}
+        recordingCount={recordingsList.length}
+        filteredCount={filteredRecordings.length}
+        visible={showTimeline}
+      />
+
+      <View style={styles.bottomControls}>
+        <RecordButton
+          isRecording={isRecording}
+          onPress={handleRecordPress}
+          disabled={!location}
+        />
       </View>
     </View>
   );
@@ -167,43 +237,42 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
-  },
-  map: {
-    width: '100%',
-    height: '100%',
+    backgroundColor: '#000',
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#fff',
   },
-  controlsContainer: {
+  rightControls: {
     position: 'absolute',
-    bottom: 30,
-    width: '100%',
+    top: 60,
+    right: 20,
+    gap: 15,
+  },
+  controlButton: {
+    backgroundColor: 'white',
+    width: 50,
+    height: 50,
+    borderRadius: 25,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  recordButton: {
-    backgroundColor: 'white',
-    paddingVertical: 15,
-    paddingHorizontal: 30,
-    borderRadius: 30,
     elevation: 5,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
   },
-  recordingActive: {
-    backgroundColor: '#ffcccc',
-    borderColor: 'red',
+  controlButtonActive: {
     borderWidth: 2,
+    borderColor: '#4A90D9',
   },
-  recordButtonText: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-  }
+  bottomControls: {
+    position: 'absolute',
+    bottom: 40,
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });
