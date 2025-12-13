@@ -1,8 +1,11 @@
 import { Audio } from 'expo-av';
 import { AudioAnalysis } from '../types';
 
+type RecordingStatus = Audio.RecordingStatus;
+
 class AudioService {
     private recording: Audio.Recording | null = null;
+    private statusListeners: Array<(status: RecordingStatus) => void> = [];
 
     async requestPermissions(): Promise<boolean> {
         const { status } = await Audio.requestPermissionsAsync();
@@ -20,9 +23,15 @@ class AudioService {
             playsInSilentModeIOS: true,
         });
 
-        const { recording } = await Audio.Recording.createAsync(
-            Audio.RecordingOptionsPresets.HIGH_QUALITY
-        );
+        const recordingOptions: Audio.RecordingOptions = {
+            ...Audio.RecordingOptionsPresets.HIGH_QUALITY,
+            isMeteringEnabled: true,
+        };
+
+        const { recording } = await Audio.Recording.createAsync(recordingOptions);
+
+        recording.setProgressUpdateInterval(250);
+        recording.setOnRecordingStatusUpdate(this.handleStatusUpdate);
 
         this.recording = recording;
         return recording;
@@ -37,7 +46,9 @@ class AudioService {
         const uri = this.recording.getURI();
         const status = await this.recording.getStatusAsync();
 
+        this.recording.setOnRecordingStatusUpdate(undefined);
         this.recording = null;
+        this.statusListeners = [];
 
         if (!uri) {
             throw new Error('Recording URI is null');
@@ -70,6 +81,20 @@ class AudioService {
     isRecording(): boolean {
         return this.recording !== null;
     }
+
+    addStatusListener(listener: (status: RecordingStatus) => void): () => void {
+        this.statusListeners.push(listener);
+        return () => {
+            this.statusListeners = this.statusListeners.filter(cb => cb !== listener);
+        };
+    }
+
+    private handleStatusUpdate = (status: RecordingStatus) => {
+        if (!status.isRecording) {
+            return;
+        }
+        this.statusListeners.forEach(listener => listener(status));
+    };
 }
 
 export default new AudioService();

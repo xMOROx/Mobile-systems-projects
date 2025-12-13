@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { StyleSheet, Text, View, ActivityIndicator, Alert, TouchableOpacity, StatusBar } from 'react-native';
 import { Region } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -11,6 +11,7 @@ import { MapComponent, VisualizationMode } from './src/components/MapComponent';
 import { RecordButton } from './src/components/RecordButton';
 import { NoiseLegend } from './src/components/NoiseLegend';
 import { TimelineSlider } from './src/components/TimelineSlider';
+import LiveAnalysisPanel from './src/components/LiveAnalysisPanel';
 import { RecordingEntry } from './src/types';
 
 // Time window for filtering recordings (±5 minutes from selected timestamp)
@@ -27,6 +28,10 @@ export default function App() {
   const [timeRange, setTimeRange] = useState<{ start: number; end: number }>({ start: 0, end: Date.now() });
   const [showLegend, setShowLegend] = useState(true);
   const [showTimeline, setShowTimeline] = useState(true);
+  const [liveLevel, setLiveLevel] = useState<number | null>(null);
+  const [liveMin, setLiveMin] = useState<number | null>(null);
+  const [liveMax, setLiveMax] = useState<number | null>(null);
+  const statusUnsubscribe = useRef<(() => void) | null>(null);
 
   // Filter recordings based on selected timestamp (show recordings within ±5 minutes)
   const filteredRecordings = useMemo(() => {
@@ -44,6 +49,19 @@ export default function App() {
 
   useEffect(() => {
     initializeApp();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      statusUnsubscribe.current?.();
+    };
+  }, []);
+
+  const convertMetering = useCallback((metering: number | null) => {
+    if (metering === null || Number.isNaN(metering)) return null;
+    const normalized = Math.round(metering * 10) / 10;
+    const C = 90 // Constant to convert from dBFS to real dB SPL, but its value should be different for every microphone.
+    return normalized + C
   }, []);
 
   const initializeApp = async () => {
@@ -93,6 +111,19 @@ export default function App() {
       }
 
       await AudioService.startRecording();
+      setLiveLevel(null);
+      setLiveMin(null);
+      setLiveMax(null);
+      statusUnsubscribe.current?.();
+      statusUnsubscribe.current = AudioService.addStatusListener(status => {
+        const meteringRaw = typeof (status as any).metering === 'number' ? (status as any).metering : null;
+        const levelDb = convertMetering(meteringRaw);
+        if (levelDb !== null) {
+          setLiveLevel(levelDb);
+          setLiveMin(prev => (prev === null ? levelDb : Math.min(prev, levelDb)));
+          setLiveMax(prev => (prev === null ? levelDb : Math.max(prev, levelDb)));
+        }
+      });
       setIsRecording(true);
       console.log('Recording started');
     } catch (error) {
@@ -103,6 +134,8 @@ export default function App() {
 
   const stopRecording = async () => {
     try {
+      statusUnsubscribe.current?.();
+      statusUnsubscribe.current = null;
       const { uri, analysis } = await AudioService.stopRecording();
       setIsRecording(false);
 
@@ -215,13 +248,22 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {/* Timeline slider for historical data */}
-      <TimelineSlider
-        onTimeChange={handleTimeChange}
-        recordingCount={recordingsList.length}
-        filteredCount={filteredRecordings.length}
-        visible={showTimeline}
-      />
+      {/* Show live analysis while recording, otherwise show timeline slider */}
+      {isRecording ? (
+        <LiveAnalysisPanel
+          level={liveLevel}
+          minLevel={liveMin}
+          maxLevel={liveMax}
+          visible
+        />
+      ) : (
+        <TimelineSlider
+          onTimeChange={handleTimeChange}
+          recordingCount={recordingsList.length}
+          filteredCount={filteredRecordings.length}
+          visible={showTimeline}
+        />
+      )}
 
       <View style={styles.bottomControls}>
         <RecordButton
