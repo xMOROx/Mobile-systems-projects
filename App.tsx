@@ -28,10 +28,17 @@ export default function App() {
   const [timeRange, setTimeRange] = useState<{ start: number; end: number }>({ start: 0, end: Date.now() });
   const [showLegend, setShowLegend] = useState(true);
   const [showTimeline, setShowTimeline] = useState(true);
+  const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const notificationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [liveLevel, setLiveLevel] = useState<number | null>(null);
   const [liveMin, setLiveMin] = useState<number | null>(null);
   const [liveMax, setLiveMax] = useState<number | null>(null);
+  const [recordingDuration, setRecordingDuration] = useState<number>(0);
+  const [recordingAverageLevelDb, setRecordingAverageLevelDb] = useState<number | null>(null);
   const statusUnsubscribe = useRef<(() => void) | null>(null);
+  const recordingStartTimeRef = useRef<number | null>(null);
+  const levelSumRef = useRef<number>(0);
+  const levelCountRef = useRef<number>(0);
 
   // Filter recordings based on selected timestamp (show recordings within ±5 minutes)
   const filteredRecordings = useMemo(() => {
@@ -54,8 +61,17 @@ export default function App() {
   useEffect(() => {
     return () => {
       statusUnsubscribe.current?.();
+      notificationTimeoutRef.current && clearTimeout(notificationTimeoutRef.current);
     };
   }, []);
+
+  const showNotification = (type: 'success' | 'error', message: string) => {
+    notificationTimeoutRef.current && clearTimeout(notificationTimeoutRef.current);
+    setNotification({ type, message });
+    notificationTimeoutRef.current = setTimeout(() => {
+      setNotification(null);
+    }, 3500);
+  };
 
   const convertMetering = useCallback((metering: number | null) => {
     if (metering === null || Number.isNaN(metering)) return null;
@@ -110,10 +126,15 @@ export default function App() {
         return;
       }
 
+      recordingStartTimeRef.current = Date.now();
+      levelSumRef.current = 0;
+      levelCountRef.current = 0;
       await AudioService.startRecording();
       setLiveLevel(null);
       setLiveMin(null);
       setLiveMax(null);
+      setRecordingDuration(0);
+      setRecordingAverageLevelDb(null);
       statusUnsubscribe.current?.();
       statusUnsubscribe.current = AudioService.addStatusListener(status => {
         const meteringRaw = typeof (status as any).metering === 'number' ? (status as any).metering : null;
@@ -122,13 +143,20 @@ export default function App() {
           setLiveLevel(levelDb);
           setLiveMin(prev => (prev === null ? levelDb : Math.min(prev, levelDb)));
           setLiveMax(prev => (prev === null ? levelDb : Math.max(prev, levelDb)));
+          levelSumRef.current += levelDb;
+          levelCountRef.current += 1;
+          setRecordingAverageLevelDb(levelSumRef.current / levelCountRef.current);
+        }
+        if (recordingStartTimeRef.current) {
+          const elapsed = (Date.now() - recordingStartTimeRef.current) / 1000;
+          setRecordingDuration(elapsed);
         }
       });
       setIsRecording(true);
       console.log('Recording started');
     } catch (error) {
       console.error('Failed to start recording:', error);
-      Alert.alert('Error', 'Failed to start recording. Please check microphone permissions.');
+      showNotification('error', 'Failed to start recording. Check microphone permissions.');
     }
   };
 
@@ -136,6 +164,9 @@ export default function App() {
     try {
       statusUnsubscribe.current?.();
       statusUnsubscribe.current = null;
+      recordingStartTimeRef.current = null;
+      levelSumRef.current = 0;
+      levelCountRef.current = 0;
       const { uri, analysis } = await AudioService.stopRecording();
       setIsRecording(false);
 
@@ -150,17 +181,12 @@ export default function App() {
         );
 
         console.log('Recording saved:', recordingId, analysis);
-
-        Alert.alert(
-          'Recording Saved',
-          `Duration: ${analysis.duration.toFixed(1)}s\nAvg: ${analysis.averageDecibels} dB\nPeak: ${analysis.peakDecibels} dB`
-        );
-
+        showNotification('success', `Recording saved • ${analysis.duration.toFixed(1)}s • Avg: ${analysis.averageDecibels} dB`);
         loadRecordings();
       }
     } catch (error) {
       console.error('Failed to stop recording:', error);
-      Alert.alert('Error', 'Failed to save recording');
+      showNotification('error', 'Failed to save recording');
     }
   };
 
@@ -254,6 +280,8 @@ export default function App() {
           level={liveLevel}
           minLevel={liveMin}
           maxLevel={liveMax}
+          duration={recordingDuration}
+          averageLevel={recordingAverageLevelDb}
           visible
         />
       ) : (
@@ -263,6 +291,13 @@ export default function App() {
           filteredCount={filteredRecordings.length}
           visible={showTimeline}
         />
+      )}
+
+      {/* Notification Toast */}
+      {notification && (
+        <View style={[styles.notification, styles[`notification_${notification.type}`]]}>
+          <Text style={styles.notificationText}>{notification.message}</Text>
+        </View>
       )}
 
       <View style={styles.bottomControls}>
@@ -316,5 +351,29 @@ const styles = StyleSheet.create({
     width: '100%',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  notification: {
+    position: 'absolute',
+    bottom: 4,
+    left: 20,
+    right: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notification_success: {
+    backgroundColor: '#34C759',
+  },
+  notification_error: {
+    backgroundColor: '#FF3B30',
+  },
+  notificationText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
   },
 });

@@ -6,15 +6,19 @@ interface LiveAnalysisPanelProps {
     level: number | null;
     minLevel: number | null;
     maxLevel: number | null;
+    duration: number;
+    averageLevel: number | null;
     visible: boolean;
 }
 
-export const LiveAnalysisPanel: React.FC<LiveAnalysisPanelProps> = ({ level, minLevel, maxLevel, visible }) => {
+export const LiveAnalysisPanel: React.FC<LiveAnalysisPanelProps> = ({ level, minLevel, maxLevel, duration, averageLevel, visible }) => {
     if (!visible) return null;
 
     const displayLevel = level !== null ? level.toFixed(1) : '—';
     const displayMin = minLevel !== null ? minLevel.toFixed(1) : '—';
     const displayMax = maxLevel !== null ? maxLevel.toFixed(1) : '—';
+    const displayDuration = duration.toFixed(1);
+    const displayAverage = averageLevel !== null ? averageLevel.toFixed(1) : '—';
 
     return (
         <View style={styles.container}>
@@ -38,6 +42,17 @@ export const LiveAnalysisPanel: React.FC<LiveAnalysisPanelProps> = ({ level, min
                     <View style={styles.metricCard}>
                         <Text style={styles.metricLabel}>Max</Text>
                         <Text style={styles.metricValue}>{displayMax} dB</Text>
+                    </View>
+                </View>
+
+                <View style={styles.row}>
+                    <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>Duration</Text>
+                        <Text style={styles.metricValue}>{displayDuration}s</Text>
+                    </View>
+                    <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>Average</Text>
+                        <Text style={styles.metricValue}>{displayAverage} dB</Text>
                     </View>
                 </View>
             </LinearGradient>
