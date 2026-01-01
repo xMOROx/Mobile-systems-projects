@@ -37,6 +37,7 @@ export default function App() {
   const recordingStartTimeRef = useRef<number | null>(null);
   const levelSumRef = useRef<number>(0);
   const levelCountRef = useRef<number>(0);
+  const liveMaxRef = useRef<number>(0);
 
   const [selectedRecordings, setSelectedRecordings] = useState<RecordingEntry[]>([]);
   const [activeDetailRecording, setActiveDetailRecording] = useState<RecordingEntry | null>(null);
@@ -128,6 +129,7 @@ export default function App() {
       recordingStartTimeRef.current = Date.now();
       levelSumRef.current = 0;
       levelCountRef.current = 0;
+      liveMaxRef.current = 0;
       await AudioService.startRecording();
       setLiveLevel(null);
       setLiveMin(null);
@@ -141,7 +143,11 @@ export default function App() {
         if (levelDb !== null) {
           setLiveLevel(levelDb);
           setLiveMin(prev => (prev === null ? levelDb : Math.min(prev, levelDb)));
-          setLiveMax(prev => (prev === null ? levelDb : Math.max(prev, levelDb)));
+          setLiveMax(prev => {
+              const newVal = prev === null ? levelDb : Math.max(prev, levelDb);
+              liveMaxRef.current = newVal;
+              return newVal;
+          });
           levelSumRef.current += levelDb;
           levelCountRef.current += 1;
           setRecordingAverageLevelDb(levelSumRef.current / levelCountRef.current);
@@ -167,7 +173,7 @@ export default function App() {
 
       const count = levelCountRef.current || 1;
       const finalAverageDb = levelSumRef.current / count;
-      const finalPeakDb = liveMax || 0;
+      const finalPeakDb = liveMaxRef.current || 0;
 
       levelSumRef.current = 0;
       levelCountRef.current = 0;
@@ -252,6 +258,10 @@ export default function App() {
     }
   };
 
+  const handleRegionChangeComplete = (newRegion: Region) => {
+      setRegion(newRegion);
+  };
+
   if (isLoading || !region) {
     return (
       <View style={styles.container}>
@@ -274,6 +284,7 @@ export default function App() {
         region={region}
         recordings={filteredRecordings}
         onMarkerPress={handleMarkerPress}
+        onRegionChangeComplete={handleRegionChangeComplete}
       />
 
       <NoiseLegend visible={showLegend} />

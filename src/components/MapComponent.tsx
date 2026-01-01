@@ -1,16 +1,17 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { StyleSheet, View, Text } from 'react-native';
-import MapView, { Region, PROVIDER_GOOGLE, Marker } from 'react-native-maps';
+import MapView, { Region, PROVIDER_GOOGLE, Marker, Circle } from 'react-native-maps';
 import Supercluster from 'supercluster';
 import { RecordingEntry } from '../types';
 import { getNoiseColor } from './NoiseLegend';
 
-const HEATMAP_OPACITY = 'CC';
+const HEATMAP_OPACITY = '80';
 
 interface MapComponentProps {
     region: Region;
     recordings: RecordingEntry[];
     onMarkerPress: (recording: RecordingEntry) => void;
+    onRegionChangeComplete?: (region: Region) => void;
 }
 
 const DARK_MAP_STYLE = [
@@ -106,7 +107,8 @@ const DARK_MAP_STYLE = [
 export const MapComponent: React.FC<MapComponentProps> = ({
     region,
     recordings,
-    onMarkerPress
+    onMarkerPress,
+    onRegionChangeComplete
 }) => {
     const mapRef = useRef<MapView>(null);
     const [clusters, setClusters] = useState<any[]>([]);
@@ -166,6 +168,9 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 
     const handleRegionChangeComplete = (newRegion: Region) => {
         updateClusters(newRegion);
+        if (onRegionChangeComplete) {
+            onRegionChangeComplete(newRegion);
+        }
     };
 
     return (
@@ -207,28 +212,34 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 }
 
                 const noiseColor = getNoiseColor(properties.averageDecibels);
+                const circleRadius = Math.max(40, properties.averageDecibels);
 
                 return (
-                    <Marker
-                        key={`pin-${properties.id}`}
-                        coordinate={coordinate}
-                        onPress={() => {
-                            const recording = recordings.find(r => r.id === properties.id);
-                            if (recording) {
-                                onMarkerPress(recording);
-                            }
-                        }}
-                    >
-                        <View
-                            style={[
-                                styles.pointMarker,
-                                {
-                                    backgroundColor: `${noiseColor}${HEATMAP_OPACITY}`,
-                                    borderColor: noiseColor
-                                }
-                            ]}
+                    <React.Fragment key={`point-${properties.id}`}>
+                        <Circle
+                            center={coordinate}
+                            radius={circleRadius}
+                            fillColor={`${noiseColor}${HEATMAP_OPACITY}`}
+                            strokeColor="transparent"
+                            strokeWidth={0}
+                            zIndex={1}
                         />
-                    </Marker>
+                        <Marker
+                            coordinate={coordinate}
+                            anchor={{ x: 0.5, y: 0.5 }}
+                            onPress={() => {
+                                const recording = recordings.find(r => r.id === properties.id);
+                                if (recording) {
+                                    onMarkerPress(recording);
+                                }
+                            }}
+                            zIndex={2}
+                        >
+                            <View style={styles.hitBox}>
+                                <View style={styles.centerDot} />
+                            </View>
+                        </Marker>
+                    </React.Fragment>
                 );
             })}
         </MapView>
@@ -255,10 +266,17 @@ const styles = StyleSheet.create({
         fontWeight: 'bold',
         fontSize: 14,
     },
-    pointMarker: {
-        width: 24,
-        height: 24,
-        borderRadius: 12,
-        borderWidth: 1,
+    hitBox: {
+        width: 44,
+        height: 44,
+        backgroundColor: 'transparent',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    centerDot: {
+        width: 4,
+        height: 4,
+        borderRadius: 2,
+        backgroundColor: 'rgba(255, 255, 255, 0.8)',
     }
 });
