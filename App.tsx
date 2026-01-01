@@ -14,7 +14,6 @@ import { TimelineSlider } from './src/components/TimelineSlider';
 import LiveAnalysisPanel from './src/components/LiveAnalysisPanel';
 import { RecordingEntry } from './src/types';
 
-// Time window for filtering recordings (±5 minutes from selected timestamp)
 const TIME_WINDOW_MS = 5 * 60 * 1000;
 
 export default function App() {
@@ -26,6 +25,7 @@ export default function App() {
   const [region, setRegion] = useState<Region | undefined>(undefined);
   const [timeRange, setTimeRange] = useState<{ start: number; end: number }>({ start: 0, end: Date.now() });
   const [showTimeline, setShowTimeline] = useState(true);
+  const [showLegend, setShowLegend] = useState(true);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const notificationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [liveLevel, setLiveLevel] = useState<number | null>(null);
@@ -39,7 +39,6 @@ export default function App() {
   const levelCountRef = useRef<number>(0);
   const [selectedRecording, setSelectedRecording] = useState<RecordingEntry | null>(null);
 
-  // Filter recordings based on selected timestamp (show recordings within ±5 minutes)
   const filteredRecordings = useMemo(() => {
     if (timeRange.start === 0) {
       return recordingsList;
@@ -75,17 +74,15 @@ export default function App() {
   const convertMetering = useCallback((metering: number | null) => {
     if (metering === null || Number.isNaN(metering)) return null;
     const normalized = Math.round(metering * 10) / 10;
-    const C = 90 // Constant to convert from dBFS to real dB SPL, but its value should be different for every microphone.
+    const C = 90
     const level = normalized + C;
     return level > 0 ? level : 0;
   }, []);
 
   const initializeApp = async () => {
     try {
-      // Załaduj nagrania z bazy
       loadRecordings();
 
-      // Pobierz lokalizację
       const currentLocation = await LocationService.getCurrentLocation();
       if (currentLocation) {
         setLocation(currentLocation);
@@ -174,7 +171,6 @@ export default function App() {
       setIsRecording(false);
 
       if (location) {
-        // Use the live tracked dB values instead of the mock analysis
         const recordingId = DatabaseService.saveRecording(
           uri,
           location.coords.latitude,
@@ -231,10 +227,16 @@ export default function App() {
         onMarkerPress={handleMarkerPress}
       />
 
-      {/* Noise level legend - always visible */}
-      <NoiseLegend visible={true} />
+      <NoiseLegend visible={showLegend} />
 
       <View style={styles.rightControls}>
+        <TouchableOpacity
+          style={[styles.controlButton, showLegend && styles.controlButtonActive]}
+          onPress={() => setShowLegend(!showLegend)}
+        >
+          <Ionicons name="color-palette" size={24} color={showLegend ? "#4A90D9" : "#333"} />
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={[styles.controlButton, showTimeline && styles.controlButtonActive]}
           onPress={() => setShowTimeline(!showTimeline)}
@@ -247,7 +249,6 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {/* Show live analysis while recording, otherwise show timeline slider */}
       {isRecording ? (
         <LiveAnalysisPanel
           level={liveLevel}
@@ -266,7 +267,6 @@ export default function App() {
         />
       )}
 
-      {/* Selected Recording Details Card */}
       {selectedRecording && !isRecording && (
         <View style={styles.selectionCard}>
           <View style={styles.selectionHeader}>
@@ -293,7 +293,6 @@ export default function App() {
         </View>
       )}
 
-      {/* Notification Toast */}
       {notification && (
         <View style={[styles.notification, styles[`notification_${notification.type}`]]}>
           <Text style={styles.notificationText}>{notification.message}</Text>

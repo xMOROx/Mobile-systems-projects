@@ -58,7 +58,7 @@ class AudioService {
 
         return { uri, analysis };
     }
-    // Analysis is now handled in App.tsx via live metering updates
+
     private async analyzeRecording(uri: string, status: any): Promise<AudioAnalysis> {
         const duration = status.durationMillis ? status.durationMillis / 1000 : 0;
 

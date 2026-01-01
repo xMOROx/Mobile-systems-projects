@@ -1,11 +1,9 @@
-import React, { useMemo, useState } from 'react';
-import { StyleSheet } from 'react-native';
-import MapView, { Region, PROVIDER_GOOGLE, Circle } from 'react-native-maps';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { StyleSheet, View, Text } from 'react-native';
+import MapView, { Region, PROVIDER_GOOGLE, Marker } from 'react-native-maps';
+import Supercluster from 'supercluster';
 import { RecordingEntry } from '../types';
 import { getNoiseColor } from './NoiseLegend';
-
-// Hex opacity value (50%) to allow visual overlap
-const ZONE_FILL_OPACITY = '80'; // 50%
 
 interface MapComponentProps {
     region: Region;
@@ -108,35 +106,69 @@ export const MapComponent: React.FC<MapComponentProps> = ({
     recordings,
     onMarkerPress
 }) => {
-    // Default zoom level (latitudeDelta) is 0.01 in App.tsx.
-    // Smaller delta = zoomed in. Larger delta = zoomed out.
-    const [currentZoomDelta, setCurrentZoomDelta] = useState<number>(0.01);
+    const mapRef = useRef<MapView>(null);
+    const [clusters, setClusters] = useState<any[]>([]);
 
-    const handleRegionChangeComplete = (newRegion: Region) => {
-        setCurrentZoomDelta(newRegion.latitudeDelta);
-    };
+    const supercluster = useMemo(() => {
+        const index = new Supercluster({
+            radius: 40,
+            maxZoom: 16,
+        });
 
-    // Create noise zones with proper colors and dynamic radius
-    const noiseCircles = useMemo(() => {
-        // Base radius formula:
-        // We want the circles to remain visible (roughly same pixel size) or scalable.
-        // User asked for "dynamic scaling depending on zoom".
-        // If we use a fixed meter radius, they shrink when zooming out.
-        // To make them "heatmap-like points" that are visible, we scale the meter radius with the zoom delta.
-        // 3000 is an empirical multiplier to get a decent size "dot" effect.
-        const dynamicRadius = Math.max(5, 3000 * currentZoomDelta);
-
-        return recordings
+        const points = recordings
             .filter(r => r.averageDecibels !== undefined && r.averageDecibels !== null)
             .map(r => ({
-                ...r,
-                color: getNoiseColor(r.averageDecibels!),
-                radius: dynamicRadius
+                type: 'Feature' as const,
+                properties: {
+                    cluster: false,
+                    id: r.id,
+                    averageDecibels: r.averageDecibels
+                },
+                geometry: {
+                    type: 'Point' as const,
+                    coordinates: [r.longitude, r.latitude]
+                }
             }));
-    }, [recordings, currentZoomDelta]);
+
+        index.load(points);
+        return index;
+    }, [recordings]);
+
+    const updateClusters = (currentRegion: Region) => {
+        if (!supercluster || !currentRegion) return;
+
+        const { longitude, latitude, longitudeDelta, latitudeDelta } = currentRegion;
+
+        const zoom = Math.round(Math.log2(360 / longitudeDelta));
+
+        const bbox: [number, number, number, number] = [
+            longitude - longitudeDelta / 2,
+            latitude - latitudeDelta / 2,
+            longitude + longitudeDelta / 2,
+            latitude + latitudeDelta / 2
+        ];
+
+        try {
+            const newClusters = supercluster.getClusters(bbox, zoom);
+            setClusters(newClusters);
+        } catch (e) {
+            console.error('Error updating clusters:', e);
+        }
+    };
+
+    useEffect(() => {
+        if (region) {
+            updateClusters(region);
+        }
+    }, [supercluster]);
+
+    const handleRegionChangeComplete = (newRegion: Region) => {
+        updateClusters(newRegion);
+    };
 
     return (
         <MapView
+            ref={mapRef}
             style={styles.map}
             initialRegion={region}
             showsUserLocation={true}
@@ -144,20 +176,50 @@ export const MapComponent: React.FC<MapComponentProps> = ({
             customMapStyle={DARK_MAP_STYLE}
             onRegionChangeComplete={handleRegionChangeComplete}
         >
-            {/* Colored circles acting as scalable points */}
-            {noiseCircles.map((circle) => (
-                <Circle
-                    key={`circle-${circle.id}`}
-                    center={{ latitude: circle.latitude, longitude: circle.longitude }}
-                    radius={circle.radius}
-                    fillColor={`${circle.color}${ZONE_FILL_OPACITY}`}
-                    strokeColor={circle.color}
-                    strokeWidth={1}
-                    // @ts-ignore: onPress is available in recent react-native-maps versions
-                    onPress={() => onMarkerPress(circle)}
-                    tappable={true}
-                />
-            ))}
+            {clusters.map((item) => {
+                const geometry = item.geometry;
+                const properties = item.properties;
+                const coordinate = {
+                    latitude: geometry.coordinates[1],
+                    longitude: geometry.coordinates[0],
+                };
+
+                if (properties.cluster) {
+                    return (
+                        <Marker
+                            key={`cluster-${item.id}`}
+                            coordinate={coordinate}
+                            onPress={() => {
+                                const expansionZoom = supercluster.getClusterExpansionZoom(item.id);
+                                mapRef.current?.animateCamera({
+                                    center: coordinate,
+                                    zoom: expansionZoom,
+                                });
+                            }}
+                        >
+                            <View style={styles.clusterContainer}>
+                                <Text style={styles.clusterText}>{properties.point_count}</Text>
+                            </View>
+                        </Marker>
+                    );
+                }
+
+                const noiseColor = getNoiseColor(properties.averageDecibels);
+                return (
+                    <Marker
+                        key={`pin-${properties.id}`}
+                        coordinate={coordinate}
+                        onPress={() => {
+                            const recording = recordings.find(r => r.id === properties.id);
+                            if (recording) {
+                                onMarkerPress(recording);
+                            }
+                        }}
+                    >
+                        <View style={[styles.pinPoint, { backgroundColor: noiseColor }]} />
+                    </Marker>
+                );
+            })}
         </MapView>
     );
 };
@@ -166,5 +228,27 @@ const styles = StyleSheet.create({
     map: {
         width: '100%',
         height: '100%',
+    },
+    clusterContainer: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: '#4A90D9',
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderWidth: 2,
+        borderColor: '#fff',
+    },
+    clusterText: {
+        color: '#fff',
+        fontWeight: 'bold',
+        fontSize: 14,
+    },
+    pinPoint: {
+        width: 20,
+        height: 20,
+        borderRadius: 10,
+        borderWidth: 2,
+        borderColor: 'white',
     },
 });
