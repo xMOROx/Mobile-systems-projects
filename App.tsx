@@ -14,8 +14,7 @@ import { TimelineSlider } from './src/components/TimelineSlider';
 import LiveAnalysisPanel from './src/components/LiveAnalysisPanel';
 import { RecordingEntry } from './src/types';
 
-// Used to determine "overlapping" recordings on click
-const CLICK_OVERLAP_FACTOR = 2500;
+const CLICK_OVERLAP_FACTOR = 3500;
 
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
@@ -39,9 +38,7 @@ export default function App() {
   const levelSumRef = useRef<number>(0);
   const levelCountRef = useRef<number>(0);
 
-  // State for multiple selected recordings (for overlapping points)
   const [selectedRecordings, setSelectedRecordings] = useState<RecordingEntry[]>([]);
-  // State for viewing a specific recording details from the list
   const [activeDetailRecording, setActiveDetailRecording] = useState<RecordingEntry | null>(null);
 
   const filteredRecordings = useMemo(() => {
@@ -167,7 +164,9 @@ export default function App() {
       statusUnsubscribe.current?.();
       statusUnsubscribe.current = null;
       recordingStartTimeRef.current = null;
-      const finalAverageDb = recordingAverageLevelDb || 0;
+
+      const count = levelCountRef.current || 1;
+      const finalAverageDb = levelSumRef.current / count;
       const finalPeakDb = liveMax || 0;
 
       levelSumRef.current = 0;
@@ -196,48 +195,42 @@ export default function App() {
   };
 
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-    const R = 6371e3; // metres
-    const φ1 = lat1 * Math.PI / 180; // φ, λ in radians
-    const φ2 = lat2 * Math.PI / 180;
-    const Δφ = (lat2 - lat1) * Math.PI / 180;
-    const Δλ = (lon2 - lon1) * Math.PI / 180;
+    const R = 6371e3;
+    const phi1 = lat1 * Math.PI / 180;
+    const phi2 = lat2 * Math.PI / 180;
+    const deltaPhi = (lat2 - lat1) * Math.PI / 180;
+    const deltaLambda = (lon2 - lon1) * Math.PI / 180;
 
-    const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-      Math.cos(φ1) * Math.cos(φ2) *
-      Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+      Math.cos(phi1) * Math.cos(phi2) *
+      Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
     return R * c;
   };
 
   const handleMarkerPress = (recording: RecordingEntry) => {
-    // If we don't have a region, we can't calculate dynamic overlap radius effectively,
-    // so just default to selecting the one clicked.
     if (!region) {
         setSelectedRecordings([recording]);
         setActiveDetailRecording(recording);
         return;
     }
 
-    // Dynamic radius used in visualization is 2500 * latitudeDelta (in meters roughly)
-    // We use a slightly generous visual overlap check
     const visualRadius = CLICK_OVERLAP_FACTOR * region.latitudeDelta;
 
     const nearbyRecordings = filteredRecordings.filter(r => {
         const dist = calculateDistance(recording.latitude, recording.longitude, r.latitude, r.longitude);
-        return dist <= visualRadius; // Overlapping points
+        return dist <= visualRadius;
     });
 
-    // Sort by most recent first
     nearbyRecordings.sort((a, b) => b.timestamp - a.timestamp);
 
     setSelectedRecordings(nearbyRecordings);
 
-    // If there is only one, set it as active detail immediately
     if (nearbyRecordings.length === 1) {
         setActiveDetailRecording(nearbyRecordings[0]);
     } else {
-        setActiveDetailRecording(null); // Show list
+        setActiveDetailRecording(null);
     }
   };
 
@@ -270,7 +263,6 @@ export default function App() {
     );
   }
 
-  // Determine what to render in the selection card
   const shouldShowSelection = selectedRecordings.length > 0 && !isRecording;
   const showList = selectedRecordings.length > 1 && !activeDetailRecording;
   const showDetail = !!activeDetailRecording;
@@ -324,7 +316,6 @@ export default function App() {
         />
       )}
 
-      {/* Selected Recordings Interface */}
       {shouldShowSelection && (
         <View style={styles.selectionCard}>
           {showList && (
