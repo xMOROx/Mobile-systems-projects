@@ -46,7 +46,7 @@ class AudioService {
         const uri = this.recording.getURI();
         const status = await this.recording.getStatusAsync();
 
-        this.recording.setOnRecordingStatusUpdate(undefined);
+        this.recording.setOnRecordingStatusUpdate(null);
         this.recording = null;
         this.statusListeners = [];
 
@@ -58,17 +58,14 @@ class AudioService {
 
         return { uri, analysis };
     }
-    //TODO: use a real audio analysis library to get decibel levels
+    // Analysis is now handled in App.tsx via live metering updates
     private async analyzeRecording(uri: string, status: any): Promise<AudioAnalysis> {
         const duration = status.durationMillis ? status.durationMillis / 1000 : 0;
 
-        const averageDecibels = Math.random() * 30 + 50;
-        const peakDecibels = averageDecibels + Math.random() * 20;
-
         return {
             duration,
-            averageDecibels: Math.round(averageDecibels * 10) / 10,
-            peakDecibels: Math.round(peakDecibels * 10) / 10,
+            averageDecibels: 0,
+            peakDecibels: 0,
         };
     }
 

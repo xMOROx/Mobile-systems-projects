@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import DatabaseService from './src/database/DatabaseService';
 import LocationService from './src/services/LocationService';
 import AudioService from './src/services/AudioService';
-import { MapComponent, VisualizationMode } from './src/components/MapComponent';
+import { MapComponent } from './src/components/MapComponent';
 import { RecordButton } from './src/components/RecordButton';
 import { NoiseLegend } from './src/components/NoiseLegend';
 import { TimelineSlider } from './src/components/TimelineSlider';
@@ -23,10 +23,8 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingsList, setRecordingsList] = useState<RecordingEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [visualizationMode, setVisualizationMode] = useState<VisualizationMode>('heatmap');
   const [region, setRegion] = useState<Region | undefined>(undefined);
   const [timeRange, setTimeRange] = useState<{ start: number; end: number }>({ start: 0, end: Date.now() });
-  const [showLegend, setShowLegend] = useState(true);
   const [showTimeline, setShowTimeline] = useState(true);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const notificationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -39,6 +37,7 @@ export default function App() {
   const recordingStartTimeRef = useRef<number | null>(null);
   const levelSumRef = useRef<number>(0);
   const levelCountRef = useRef<number>(0);
+  const [selectedRecording, setSelectedRecording] = useState<RecordingEntry | null>(null);
 
   // Filter recordings based on selected timestamp (show recordings within ±5 minutes)
   const filteredRecordings = useMemo(() => {
@@ -77,7 +76,8 @@ export default function App() {
     if (metering === null || Number.isNaN(metering)) return null;
     const normalized = Math.round(metering * 10) / 10;
     const C = 90 // Constant to convert from dBFS to real dB SPL, but its value should be different for every microphone.
-    return normalized + C
+    const level = normalized + C;
+    return level > 0 ? level : 0;
   }, []);
 
   const initializeApp = async () => {
@@ -165,23 +165,27 @@ export default function App() {
       statusUnsubscribe.current?.();
       statusUnsubscribe.current = null;
       recordingStartTimeRef.current = null;
+      const finalAverageDb = recordingAverageLevelDb || 0;
+      const finalPeakDb = liveMax || 0;
+
       levelSumRef.current = 0;
       levelCountRef.current = 0;
       const { uri, analysis } = await AudioService.stopRecording();
       setIsRecording(false);
 
       if (location) {
+        // Use the live tracked dB values instead of the mock analysis
         const recordingId = DatabaseService.saveRecording(
           uri,
           location.coords.latitude,
           location.coords.longitude,
           analysis.duration,
-          analysis.averageDecibels,
-          analysis.peakDecibels
+          finalAverageDb,
+          finalPeakDb
         );
 
-        console.log('Recording saved:', recordingId, analysis);
-        showNotification('success', `Recording saved • ${analysis.duration.toFixed(1)}s • Avg: ${analysis.averageDecibels} dB`);
+        console.log('Recording saved:', recordingId, { duration: analysis.duration, avg: finalAverageDb, peak: finalPeakDb });
+        showNotification('success', `Recording saved • ${analysis.duration.toFixed(1)}s • Avg: ${finalAverageDb.toFixed(1)} dB`);
         loadRecordings();
       }
     } catch (error) {
@@ -191,22 +195,7 @@ export default function App() {
   };
 
   const handleMarkerPress = (recording: RecordingEntry) => {
-    Alert.alert(
-      `Recording #${recording.id}`,
-      `Time: ${new Date(recording.timestamp).toLocaleString()}\n` +
-      `Duration: ${recording.duration?.toFixed(1) || 'N/A'}s\n` +
-      `Average: ${recording.averageDecibels?.toFixed(1) || 'N/A'} dB\n` +
-      `Peak: ${recording.peakDecibels?.toFixed(1) || 'N/A'} dB`,
-      [{ text: 'OK' }]
-    );
-  };
-
-  const toggleVisualizationMode = () => {
-    setVisualizationMode(current => {
-      if (current === 'markers') return 'heatmap';
-      if (current === 'heatmap') return 'both';
-      return 'markers';
-    });
+    setSelectedRecording(recording);
   };
 
   const recenterMap = async () => {
@@ -240,28 +229,12 @@ export default function App() {
         region={region}
         recordings={filteredRecordings}
         onMarkerPress={handleMarkerPress}
-        visualizationMode={visualizationMode}
       />
 
-      {/* Noise level legend */}
-      <NoiseLegend visible={showLegend && (visualizationMode === 'heatmap' || visualizationMode === 'both')} />
+      {/* Noise level legend - always visible */}
+      <NoiseLegend visible={true} />
 
       <View style={styles.rightControls}>
-        <TouchableOpacity style={styles.controlButton} onPress={toggleVisualizationMode}>
-          <Ionicons
-            name={visualizationMode === 'heatmap' ? "flame" : visualizationMode === 'both' ? "layers" : "location"}
-            size={24}
-            color="#333"
-          />
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.controlButton, showLegend && styles.controlButtonActive]}
-          onPress={() => setShowLegend(!showLegend)}
-        >
-          <Ionicons name="color-palette" size={24} color={showLegend ? "#4A90D9" : "#333"} />
-        </TouchableOpacity>
-
         <TouchableOpacity
           style={[styles.controlButton, showTimeline && styles.controlButtonActive]}
           onPress={() => setShowTimeline(!showTimeline)}
@@ -291,6 +264,33 @@ export default function App() {
           filteredCount={filteredRecordings.length}
           visible={showTimeline}
         />
+      )}
+
+      {/* Selected Recording Details Card */}
+      {selectedRecording && !isRecording && (
+        <View style={styles.selectionCard}>
+          <View style={styles.selectionHeader}>
+            <Text style={styles.selectionTitle}>Recording Details</Text>
+            <TouchableOpacity onPress={() => setSelectedRecording(null)}>
+              <Ionicons name="close-circle" size={24} color="#ccc" />
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.selectionText}>Time: {new Date(selectedRecording.timestamp).toLocaleString()}</Text>
+          <View style={styles.selectionStats}>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Avg dB</Text>
+              <Text style={styles.statValue}>{selectedRecording.averageDecibels?.toFixed(1) || '--'}</Text>
+            </View>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Peak dB</Text>
+              <Text style={styles.statValue}>{selectedRecording.peakDecibels?.toFixed(1) || '--'}</Text>
+            </View>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Duration</Text>
+              <Text style={styles.statValue}>{selectedRecording.duration?.toFixed(1) || '--'}s</Text>
+            </View>
+          </View>
+        </View>
       )}
 
       {/* Notification Toast */}
@@ -375,5 +375,49 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     textAlign: 'center',
+  },
+  selectionCard: {
+    position: 'absolute',
+    bottom: 120,
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(30, 30, 40, 0.95)',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  selectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  selectionTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  selectionText: {
+    color: '#aaa',
+    fontSize: 12,
+    marginBottom: 12,
+  },
+  selectionStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  statItem: {
+    alignItems: 'center',
+  },
+  statLabel: {
+    color: '#888',
+    fontSize: 11,
+    marginBottom: 4,
+  },
+  statValue: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
   },
 });
