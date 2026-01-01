@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { StyleSheet, Text, View, ActivityIndicator, Alert, TouchableOpacity, StatusBar } from 'react-native';
+import { StyleSheet, Text, View, ActivityIndicator, Alert, TouchableOpacity, StatusBar, ScrollView } from 'react-native';
 import { Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,12 +9,13 @@ import LocationService from './src/services/LocationService';
 import AudioService from './src/services/AudioService';
 import { MapComponent } from './src/components/MapComponent';
 import { RecordButton } from './src/components/RecordButton';
-import { NoiseLegend } from './src/components/NoiseLegend';
+import { NoiseLegend, getNoiseColor } from './src/components/NoiseLegend';
 import { TimelineSlider } from './src/components/TimelineSlider';
 import LiveAnalysisPanel from './src/components/LiveAnalysisPanel';
 import { RecordingEntry } from './src/types';
 
-const TIME_WINDOW_MS = 5 * 60 * 1000;
+// Used to determine "overlapping" recordings on click
+const CLICK_OVERLAP_FACTOR = 2500;
 
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
@@ -37,7 +38,11 @@ export default function App() {
   const recordingStartTimeRef = useRef<number | null>(null);
   const levelSumRef = useRef<number>(0);
   const levelCountRef = useRef<number>(0);
-  const [selectedRecording, setSelectedRecording] = useState<RecordingEntry | null>(null);
+
+  // State for multiple selected recordings (for overlapping points)
+  const [selectedRecordings, setSelectedRecordings] = useState<RecordingEntry[]>([]);
+  // State for viewing a specific recording details from the list
+  const [activeDetailRecording, setActiveDetailRecording] = useState<RecordingEntry | null>(null);
 
   const filteredRecordings = useMemo(() => {
     if (timeRange.start === 0) {
@@ -190,8 +195,55 @@ export default function App() {
     }
   };
 
+  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371e3; // metres
+    const φ1 = lat1 * Math.PI / 180; // φ, λ in radians
+    const φ2 = lat2 * Math.PI / 180;
+    const Δφ = (lat2 - lat1) * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+    const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+      Math.cos(φ1) * Math.cos(φ2) *
+      Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
+  };
+
   const handleMarkerPress = (recording: RecordingEntry) => {
-    setSelectedRecording(recording);
+    // If we don't have a region, we can't calculate dynamic overlap radius effectively,
+    // so just default to selecting the one clicked.
+    if (!region) {
+        setSelectedRecordings([recording]);
+        setActiveDetailRecording(recording);
+        return;
+    }
+
+    // Dynamic radius used in visualization is 2500 * latitudeDelta (in meters roughly)
+    // We use a slightly generous visual overlap check
+    const visualRadius = CLICK_OVERLAP_FACTOR * region.latitudeDelta;
+
+    const nearbyRecordings = filteredRecordings.filter(r => {
+        const dist = calculateDistance(recording.latitude, recording.longitude, r.latitude, r.longitude);
+        return dist <= visualRadius; // Overlapping points
+    });
+
+    // Sort by most recent first
+    nearbyRecordings.sort((a, b) => b.timestamp - a.timestamp);
+
+    setSelectedRecordings(nearbyRecordings);
+
+    // If there is only one, set it as active detail immediately
+    if (nearbyRecordings.length === 1) {
+        setActiveDetailRecording(nearbyRecordings[0]);
+    } else {
+        setActiveDetailRecording(null); // Show list
+    }
+  };
+
+  const closeSelection = () => {
+    setSelectedRecordings([]);
+    setActiveDetailRecording(null);
   };
 
   const recenterMap = async () => {
@@ -217,6 +269,11 @@ export default function App() {
       </View>
     );
   }
+
+  // Determine what to render in the selection card
+  const shouldShowSelection = selectedRecordings.length > 0 && !isRecording;
+  const showList = selectedRecordings.length > 1 && !activeDetailRecording;
+  const showDetail = !!activeDetailRecording;
 
   return (
     <View style={styles.container}>
@@ -267,29 +324,71 @@ export default function App() {
         />
       )}
 
-      {selectedRecording && !isRecording && (
+      {/* Selected Recordings Interface */}
+      {shouldShowSelection && (
         <View style={styles.selectionCard}>
-          <View style={styles.selectionHeader}>
-            <Text style={styles.selectionTitle}>Recording Details</Text>
-            <TouchableOpacity onPress={() => setSelectedRecording(null)}>
-              <Ionicons name="close-circle" size={24} color="#ccc" />
-            </TouchableOpacity>
-          </View>
-          <Text style={styles.selectionText}>Time: {new Date(selectedRecording.timestamp).toLocaleString()}</Text>
-          <View style={styles.selectionStats}>
-            <View style={styles.statItem}>
-              <Text style={styles.statLabel}>Avg dB</Text>
-              <Text style={styles.statValue}>{selectedRecording.averageDecibels?.toFixed(1) || '--'}</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Text style={styles.statLabel}>Peak dB</Text>
-              <Text style={styles.statValue}>{selectedRecording.peakDecibels?.toFixed(1) || '--'}</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Text style={styles.statLabel}>Duration</Text>
-              <Text style={styles.statValue}>{selectedRecording.duration?.toFixed(1) || '--'}s</Text>
-            </View>
-          </View>
+          {showList && (
+            <>
+              <View style={styles.selectionHeader}>
+                <Text style={styles.selectionTitle}>{selectedRecordings.length} Recordings Nearby</Text>
+                <TouchableOpacity onPress={closeSelection}>
+                  <Ionicons name="close-circle" size={24} color="#ccc" />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.selectionSubtitle}>Select one to view details</Text>
+              <View style={{ maxHeight: 200 }}>
+                <ScrollView>
+                    {selectedRecordings.map((rec) => (
+                        <TouchableOpacity
+                            key={rec.id}
+                            style={styles.listItem}
+                            onPress={() => setActiveDetailRecording(rec)}
+                        >
+                            <View style={[styles.dot, { backgroundColor: getNoiseColor(rec.averageDecibels || 0) }]} />
+                            <View style={styles.listItemContent}>
+                                <Text style={styles.listItemTime}>{new Date(rec.timestamp).toLocaleTimeString()}</Text>
+                                <Text style={styles.listItemDb}>{rec.averageDecibels?.toFixed(1)} dB</Text>
+                            </View>
+                            <Ionicons name="chevron-forward" size={20} color="#666" />
+                        </TouchableOpacity>
+                    ))}
+                </ScrollView>
+              </View>
+            </>
+          )}
+
+          {showDetail && activeDetailRecording && (
+            <>
+              <View style={styles.selectionHeader}>
+                <View style={styles.headerLeft}>
+                   {selectedRecordings.length > 1 && (
+                       <TouchableOpacity onPress={() => setActiveDetailRecording(null)} style={styles.backButton}>
+                           <Ionicons name="arrow-back" size={20} color="#fff" />
+                       </TouchableOpacity>
+                   )}
+                   <Text style={styles.selectionTitle}>Recording Details</Text>
+                </View>
+                <TouchableOpacity onPress={closeSelection}>
+                  <Ionicons name="close-circle" size={24} color="#ccc" />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.selectionText}>Time: {new Date(activeDetailRecording.timestamp).toLocaleString()}</Text>
+              <View style={styles.selectionStats}>
+                <View style={styles.statItem}>
+                  <Text style={styles.statLabel}>Avg dB</Text>
+                  <Text style={styles.statValue}>{activeDetailRecording.averageDecibels?.toFixed(1) || '--'}</Text>
+                </View>
+                <View style={styles.statItem}>
+                  <Text style={styles.statLabel}>Peak dB</Text>
+                  <Text style={styles.statValue}>{activeDetailRecording.peakDecibels?.toFixed(1) || '--'}</Text>
+                </View>
+                <View style={styles.statItem}>
+                  <Text style={styles.statLabel}>Duration</Text>
+                  <Text style={styles.statValue}>{activeDetailRecording.duration?.toFixed(1) || '--'}s</Text>
+                </View>
+              </View>
+            </>
+          )}
         </View>
       )}
 
@@ -392,10 +491,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
   },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  backButton: {
+    marginRight: 10,
+  },
   selectionTitle: {
     color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  selectionSubtitle: {
+    color: '#aaa',
+    fontSize: 12,
+    marginBottom: 10,
   },
   selectionText: {
     color: '#aaa',
@@ -419,4 +530,31 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
   },
+  listItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: 'rgba(255,255,255,0.1)',
+  },
+  listItemContent: {
+      flex: 1,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      marginHorizontal: 10,
+  },
+  listItemTime: {
+      color: '#fff',
+      fontSize: 14,
+  },
+  listItemDb: {
+      color: '#ccc',
+      fontSize: 14,
+      fontWeight: 'bold',
+  },
+  dot: {
+      width: 12,
+      height: 12,
+      borderRadius: 6,
+  }
 });
