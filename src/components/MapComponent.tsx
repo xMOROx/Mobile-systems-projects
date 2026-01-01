@@ -1,9 +1,12 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { StyleSheet, View, Text } from 'react-native';
-import MapView, { Region, PROVIDER_GOOGLE, Marker } from 'react-native-maps';
+import MapView, { Region, PROVIDER_GOOGLE, Marker, Circle } from 'react-native-maps';
 import Supercluster from 'supercluster';
 import { RecordingEntry } from '../types';
 import { getNoiseColor } from './NoiseLegend';
+
+// Hex opacity value (50%) to allow visual overlap/blending like a heatmap
+const HEATMAP_OPACITY = '80';
 
 interface MapComponentProps {
     region: Region;
@@ -108,11 +111,12 @@ export const MapComponent: React.FC<MapComponentProps> = ({
 }) => {
     const mapRef = useRef<MapView>(null);
     const [clusters, setClusters] = useState<any[]>([]);
+    const [currentZoomDelta, setCurrentZoomDelta] = useState<number>(0.01);
 
     const supercluster = useMemo(() => {
         const index = new Supercluster({
-            radius: 40,
-            maxZoom: 16,
+            radius: 60,
+            maxZoom: 15,
         });
 
         const points = recordings
@@ -138,6 +142,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
         if (!supercluster || !currentRegion) return;
 
         const { longitude, latitude, longitudeDelta, latitudeDelta } = currentRegion;
+        setCurrentZoomDelta(latitudeDelta);
 
         const zoom = Math.round(Math.log2(360 / longitudeDelta));
 
@@ -204,20 +209,28 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                     );
                 }
 
+                // For individual points, we render a Circle to achieve the "heatmap" aesthetic
+                // We use dynamic radius based on zoom (latitudeDelta) so they stay visible as dots
+                const dynamicRadius = Math.max(20, 2500 * currentZoomDelta);
                 const noiseColor = getNoiseColor(properties.averageDecibels);
+
                 return (
-                    <Marker
+                    <Circle
                         key={`pin-${properties.id}`}
-                        coordinate={coordinate}
+                        center={coordinate}
+                        radius={dynamicRadius}
+                        fillColor={`${noiseColor}${HEATMAP_OPACITY}`}
+                        strokeColor={noiseColor}
+                        strokeWidth={1}
+                        // @ts-ignore
                         onPress={() => {
                             const recording = recordings.find(r => r.id === properties.id);
                             if (recording) {
                                 onMarkerPress(recording);
                             }
                         }}
-                    >
-                        <View style={[styles.pinPoint, { backgroundColor: noiseColor }]} />
-                    </Marker>
+                        tappable={true}
+                    />
                 );
             })}
         </MapView>
@@ -233,7 +246,7 @@ const styles = StyleSheet.create({
         width: 40,
         height: 40,
         borderRadius: 20,
-        backgroundColor: '#4A90D9',
+        backgroundColor: 'rgba(74, 144, 217, 0.9)',
         justifyContent: 'center',
         alignItems: 'center',
         borderWidth: 2,
@@ -243,12 +256,5 @@ const styles = StyleSheet.create({
         color: '#fff',
         fontWeight: 'bold',
         fontSize: 14,
-    },
-    pinPoint: {
-        width: 20,
-        height: 20,
-        borderRadius: 10,
-        borderWidth: 2,
-        borderColor: 'white',
     },
 });
