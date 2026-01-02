@@ -1,23 +1,17 @@
-import React, { useMemo } from 'react';
-import { StyleSheet } from 'react-native';
-import MapView, { Region, Heatmap, PROVIDER_GOOGLE, Circle } from 'react-native-maps';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { StyleSheet, View, Text } from 'react-native';
+import MapView, { Region, PROVIDER_GOOGLE, Marker, Circle } from 'react-native-maps';
+import Supercluster from 'supercluster';
 import { RecordingEntry } from '../types';
 import { getNoiseColor } from './NoiseLegend';
 
-// Noise zone visualization constants
-const MIN_ZONE_RADIUS = 30;           // Minimum radius in meters
-const MAX_ZONE_RADIUS = 150;          // Maximum radius in meters
-const ZONE_RADIUS_BASE_DB = 40;       // Base dB level for radius calculation
-const ZONE_RADIUS_MULTIPLIER = 3;     // Multiplier for radius scaling
-const ZONE_FILL_OPACITY = '40';       // Hex opacity value (25%)
-
-// Heatmap weight normalization constants
-const MIN_DB_LEVEL = 30;              // Minimum dB level for normalization
-const DB_RANGE = 60;                  // dB range for normalization (30-90 dB)
+const HEATMAP_OPACITY = '80';
 
 interface MapComponentProps {
     region: Region;
     recordings: RecordingEntry[];
+    onMarkerPress: (recording: RecordingEntry) => void;
+    onRegionChangeComplete?: (region: Region) => void;
 }
 
 const DARK_MAP_STYLE = [
@@ -113,64 +107,141 @@ const DARK_MAP_STYLE = [
 export const MapComponent: React.FC<MapComponentProps> = ({
     region,
     recordings,
+    onMarkerPress,
+    onRegionChangeComplete
 }) => {
-    // Create noise zones with proper colors for heatmap visualization
-    const noiseZones = useMemo(() => {
-        return recordings
+    const mapRef = useRef<MapView>(null);
+    const [clusters, setClusters] = useState<any[]>([]);
+
+    const supercluster = useMemo(() => {
+        const index = new Supercluster({
+            radius: 60,
+            maxZoom: 15,
+        });
+
+        const points = recordings
             .filter(r => r.averageDecibels !== undefined && r.averageDecibels !== null)
             .map(r => ({
-                ...r,
-                color: getNoiseColor(r.averageDecibels!),
-                // Radius in meters - larger for louder sounds to show impact area
-                radius: Math.max(MIN_ZONE_RADIUS, Math.min(MAX_ZONE_RADIUS, (r.averageDecibels! - ZONE_RADIUS_BASE_DB) * ZONE_RADIUS_MULTIPLIER)),
+                type: 'Feature' as const,
+                properties: {
+                    cluster: false,
+                    id: r.id,
+                    averageDecibels: r.averageDecibels
+                },
+                geometry: {
+                    type: 'Point' as const,
+                    coordinates: [r.longitude, r.latitude]
+                }
             }));
+
+        index.load(points);
+        return index;
     }, [recordings]);
 
-    const heatmapPoints = useMemo(() => {
-        return recordings
-            .filter(r => r.averageDecibels !== undefined && r.averageDecibels !== null)
-            .map(r => ({
-                latitude: r.latitude,
-                longitude: r.longitude,
-                // Normalize weight to 0-1 range based on dB levels
-                weight: Math.min(1, Math.max(0, (r.averageDecibels! - MIN_DB_LEVEL) / DB_RANGE))
-            }));
-    }, [recordings]);
+    const updateClusters = (currentRegion: Region) => {
+        if (!supercluster || !currentRegion) return;
+
+        const { longitude, latitude, longitudeDelta, latitudeDelta } = currentRegion;
+
+        const zoom = Math.round(Math.log2(360 / longitudeDelta));
+
+        const bbox: [number, number, number, number] = [
+            longitude - longitudeDelta / 2,
+            latitude - latitudeDelta / 2,
+            longitude + longitudeDelta / 2,
+            latitude + latitudeDelta / 2
+        ];
+
+        try {
+            const newClusters = supercluster.getClusters(bbox, zoom);
+            setClusters(newClusters);
+        } catch (e) {
+            console.error('Error updating clusters:', e);
+        }
+    };
+
+    useEffect(() => {
+        if (region) {
+            updateClusters(region);
+        }
+    }, [supercluster]);
+
+    const handleRegionChangeComplete = (newRegion: Region) => {
+        updateClusters(newRegion);
+        if (onRegionChangeComplete) {
+            onRegionChangeComplete(newRegion);
+        }
+    };
 
     return (
         <MapView
+            ref={mapRef}
             style={styles.map}
             initialRegion={region}
             showsUserLocation={true}
             provider={PROVIDER_GOOGLE}
             customMapStyle={DARK_MAP_STYLE}
+            onRegionChangeComplete={handleRegionChangeComplete}
         >
-            {/* Heatmap visualization */}
-            {heatmapPoints.length > 0 && (
-                <Heatmap
-                    points={heatmapPoints}
-                    radius={40}
-                    opacity={0.7}
-                    gradient={{
-                        // Colors matching the noise map reference: green -> yellow -> orange -> red -> purple
-                        colors: ['#00CC00', '#66FF00', '#CCFF00', '#FFFF00', '#FFCC00', '#FF6600', '#FF0000', '#CC00CC'],
-                        startPoints: [0.1, 0.2, 0.3, 0.4, 0.5, 0.65, 0.8, 0.95],
-                        colorMapSize: 256
-                    }}
-                />
-            )}
+            {clusters.map((item) => {
+                const geometry = item.geometry;
+                const properties = item.properties;
+                const coordinate = {
+                    latitude: geometry.coordinates[1],
+                    longitude: geometry.coordinates[0],
+                };
 
-            {/* Colored circles for noise zones visualization */}
-            {noiseZones.map((zone) => (
-                <Circle
-                    key={`zone-${zone.id}`}
-                    center={{ latitude: zone.latitude, longitude: zone.longitude }}
-                    radius={zone.radius}
-                    fillColor={`${zone.color}${ZONE_FILL_OPACITY}`}
-                    strokeColor={zone.color}
-                    strokeWidth={2}
-                />
-            ))}
+                if (properties.cluster) {
+                    return (
+                        <Marker
+                            key={`cluster-${item.id}`}
+                            coordinate={coordinate}
+                            onPress={() => {
+                                const expansionZoom = supercluster.getClusterExpansionZoom(item.id);
+                                mapRef.current?.animateCamera({
+                                    center: coordinate,
+                                    zoom: expansionZoom,
+                                });
+                            }}
+                        >
+                            <View style={styles.clusterContainer}>
+                                <Text style={styles.clusterText}>{properties.point_count}</Text>
+                            </View>
+                        </Marker>
+                    );
+                }
+
+                const noiseColor = getNoiseColor(properties.averageDecibels);
+                const circleRadius = Math.max(60, properties.averageDecibels * 2);
+
+                return (
+                    <React.Fragment key={`point-${properties.id}`}>
+                        <Circle
+                            center={coordinate}
+                            radius={circleRadius}
+                            fillColor={`${noiseColor}${HEATMAP_OPACITY}`}
+                            strokeColor="transparent"
+                            strokeWidth={0}
+                            zIndex={1}
+                        />
+                        <Marker
+                            coordinate={coordinate}
+                            anchor={{ x: 0.5, y: 0.5 }}
+                            onPress={() => {
+                                const recording = recordings.find(r => r.id === properties.id);
+                                if (recording) {
+                                    onMarkerPress(recording);
+                                }
+                            }}
+                            zIndex={2}
+                        >
+                            <View style={styles.hitBox}>
+                                <View style={[styles.centerDot, { backgroundColor: noiseColor }]} />
+                            </View>
+                        </Marker>
+                    </React.Fragment>
+                );
+            })}
         </MapView>
     );
 };
@@ -180,4 +251,33 @@ const styles = StyleSheet.create({
         width: '100%',
         height: '100%',
     },
+    clusterContainer: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: 'rgba(74, 144, 217, 0.9)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderWidth: 2,
+        borderColor: '#fff',
+    },
+    clusterText: {
+        color: '#fff',
+        fontWeight: 'bold',
+        fontSize: 14,
+    },
+    hitBox: {
+        width: 44,
+        height: 44,
+        backgroundColor: 'transparent',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    centerDot: {
+        width: 12,
+        height: 12,
+        borderRadius: 6,
+        borderWidth: 2,
+        borderColor: 'white',
+    }
 });

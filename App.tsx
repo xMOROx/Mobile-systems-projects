@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { StyleSheet, Text, View, ActivityIndicator, Alert, TouchableOpacity, StatusBar } from 'react-native';
+import { StyleSheet, Text, View, ActivityIndicator, Alert, TouchableOpacity, StatusBar, ScrollView } from 'react-native';
 import { Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
@@ -7,15 +7,14 @@ import { Ionicons } from '@expo/vector-icons';
 import DatabaseService from './src/database/DatabaseService';
 import LocationService from './src/services/LocationService';
 import AudioService from './src/services/AudioService';
-import { MapComponent, VisualizationMode } from './src/components/MapComponent';
+import { MapComponent } from './src/components/MapComponent';
 import { RecordButton } from './src/components/RecordButton';
-import { NoiseLegend } from './src/components/NoiseLegend';
+import { NoiseLegend, getNoiseColor } from './src/components/NoiseLegend';
 import { TimelineSlider } from './src/components/TimelineSlider';
 import LiveAnalysisPanel from './src/components/LiveAnalysisPanel';
 import { RecordingEntry } from './src/types';
 
-// Time window for filtering recordings (±5 minutes from selected timestamp)
-const TIME_WINDOW_MS = 5 * 60 * 1000;
+const CLICK_OVERLAP_FACTOR = 3500;
 
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
@@ -23,11 +22,10 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingsList, setRecordingsList] = useState<RecordingEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [visualizationMode, setVisualizationMode] = useState<VisualizationMode>('heatmap');
   const [region, setRegion] = useState<Region | undefined>(undefined);
   const [timeRange, setTimeRange] = useState<{ start: number; end: number }>({ start: 0, end: Date.now() });
-  const [showLegend, setShowLegend] = useState(true);
-  const [showTimeline, setShowTimeline] = useState(true);
+  const [showTimeline, setShowTimeline] = useState(false);
+  const [showLegend, setShowLegend] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const notificationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [liveLevel, setLiveLevel] = useState<number | null>(null);
@@ -39,8 +37,11 @@ export default function App() {
   const recordingStartTimeRef = useRef<number | null>(null);
   const levelSumRef = useRef<number>(0);
   const levelCountRef = useRef<number>(0);
+  const liveMaxRef = useRef<number>(0);
 
-  // Filter recordings based on selected timestamp (show recordings within ±5 minutes)
+  const [selectedRecordings, setSelectedRecordings] = useState<RecordingEntry[]>([]);
+  const [activeDetailRecording, setActiveDetailRecording] = useState<RecordingEntry | null>(null);
+
   const filteredRecordings = useMemo(() => {
     if (timeRange.start === 0) {
       return recordingsList;
@@ -76,16 +77,15 @@ export default function App() {
   const convertMetering = useCallback((metering: number | null) => {
     if (metering === null || Number.isNaN(metering)) return null;
     const normalized = Math.round(metering * 10) / 10;
-    const C = 90 // Constant to convert from dBFS to real dB SPL, but its value should be different for every microphone.
-    return normalized + C
+    const C = 90
+    const level = normalized + C;
+    return level > 0 ? level : 0;
   }, []);
 
   const initializeApp = async () => {
     try {
-      // Załaduj nagrania z bazy
       loadRecordings();
 
-      // Pobierz lokalizację
       const currentLocation = await LocationService.getCurrentLocation();
       if (currentLocation) {
         setLocation(currentLocation);
@@ -129,6 +129,7 @@ export default function App() {
       recordingStartTimeRef.current = Date.now();
       levelSumRef.current = 0;
       levelCountRef.current = 0;
+      liveMaxRef.current = 0;
       await AudioService.startRecording();
       setLiveLevel(null);
       setLiveMin(null);
@@ -142,7 +143,11 @@ export default function App() {
         if (levelDb !== null) {
           setLiveLevel(levelDb);
           setLiveMin(prev => (prev === null ? levelDb : Math.min(prev, levelDb)));
-          setLiveMax(prev => (prev === null ? levelDb : Math.max(prev, levelDb)));
+          setLiveMax(prev => {
+              const newVal = prev === null ? levelDb : Math.max(prev, levelDb);
+              liveMaxRef.current = newVal;
+              return newVal;
+          });
           levelSumRef.current += levelDb;
           levelCountRef.current += 1;
           setRecordingAverageLevelDb(levelSumRef.current / levelCountRef.current);
@@ -165,6 +170,11 @@ export default function App() {
       statusUnsubscribe.current?.();
       statusUnsubscribe.current = null;
       recordingStartTimeRef.current = null;
+
+      const count = levelCountRef.current || 1;
+      const finalAverageDb = levelSumRef.current / count;
+      const finalPeakDb = liveMaxRef.current || 0;
+
       levelSumRef.current = 0;
       levelCountRef.current = 0;
       const { uri, analysis } = await AudioService.stopRecording();
@@ -176,12 +186,12 @@ export default function App() {
           location.coords.latitude,
           location.coords.longitude,
           analysis.duration,
-          analysis.averageDecibels,
-          analysis.peakDecibels
+          finalAverageDb,
+          finalPeakDb
         );
 
-        console.log('Recording saved:', recordingId, analysis);
-        showNotification('success', `Recording saved • ${analysis.duration.toFixed(1)}s • Avg: ${analysis.averageDecibels} dB`);
+        console.log('Recording saved:', recordingId, { duration: analysis.duration, avg: finalAverageDb, peak: finalPeakDb });
+        showNotification('success', `Recording saved • ${analysis.duration.toFixed(1)}s • Avg: ${finalAverageDb.toFixed(1)} dB`);
         loadRecordings();
       }
     } catch (error) {
@@ -190,23 +200,49 @@ export default function App() {
     }
   };
 
-  const handleMarkerPress = (recording: RecordingEntry) => {
-    Alert.alert(
-      `Recording #${recording.id}`,
-      `Time: ${new Date(recording.timestamp).toLocaleString()}\n` +
-      `Duration: ${recording.duration?.toFixed(1) || 'N/A'}s\n` +
-      `Average: ${recording.averageDecibels?.toFixed(1) || 'N/A'} dB\n` +
-      `Peak: ${recording.peakDecibels?.toFixed(1) || 'N/A'} dB`,
-      [{ text: 'OK' }]
-    );
+  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371e3;
+    const phi1 = lat1 * Math.PI / 180;
+    const phi2 = lat2 * Math.PI / 180;
+    const deltaPhi = (lat2 - lat1) * Math.PI / 180;
+    const deltaLambda = (lon2 - lon1) * Math.PI / 180;
+
+    const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+      Math.cos(phi1) * Math.cos(phi2) *
+      Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
   };
 
-  const toggleVisualizationMode = () => {
-    setVisualizationMode(current => {
-      if (current === 'markers') return 'heatmap';
-      if (current === 'heatmap') return 'both';
-      return 'markers';
+  const handleMarkerPress = (recording: RecordingEntry) => {
+    if (!region) {
+        setSelectedRecordings([recording]);
+        setActiveDetailRecording(recording);
+        return;
+    }
+
+    const visualRadius = CLICK_OVERLAP_FACTOR * region.latitudeDelta;
+
+    const nearbyRecordings = filteredRecordings.filter(r => {
+        const dist = calculateDistance(recording.latitude, recording.longitude, r.latitude, r.longitude);
+        return dist <= visualRadius;
     });
+
+    nearbyRecordings.sort((a, b) => b.timestamp - a.timestamp);
+
+    setSelectedRecordings(nearbyRecordings);
+
+    if (nearbyRecordings.length === 1) {
+        setActiveDetailRecording(nearbyRecordings[0]);
+    } else {
+        setActiveDetailRecording(null);
+    }
+  };
+
+  const closeSelection = () => {
+    setSelectedRecordings([]);
+    setActiveDetailRecording(null);
   };
 
   const recenterMap = async () => {
@@ -222,6 +258,10 @@ export default function App() {
     }
   };
 
+  const handleRegionChangeComplete = (newRegion: Region) => {
+      setRegion(newRegion);
+  };
+
   if (isLoading || !region) {
     return (
       <View style={styles.container}>
@@ -233,6 +273,10 @@ export default function App() {
     );
   }
 
+  const shouldShowSelection = selectedRecordings.length > 0 && !isRecording;
+  const showList = selectedRecordings.length > 1 && !activeDetailRecording;
+  const showDetail = !!activeDetailRecording;
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
@@ -240,21 +284,12 @@ export default function App() {
         region={region}
         recordings={filteredRecordings}
         onMarkerPress={handleMarkerPress}
-        visualizationMode={visualizationMode}
+        onRegionChangeComplete={handleRegionChangeComplete}
       />
 
-      {/* Noise level legend */}
-      <NoiseLegend visible={showLegend && (visualizationMode === 'heatmap' || visualizationMode === 'both')} />
+      <NoiseLegend visible={showLegend} />
 
       <View style={styles.rightControls}>
-        <TouchableOpacity style={styles.controlButton} onPress={toggleVisualizationMode}>
-          <Ionicons
-            name={visualizationMode === 'heatmap' ? "flame" : visualizationMode === 'both' ? "layers" : "location"}
-            size={24}
-            color="#333"
-          />
-        </TouchableOpacity>
-
         <TouchableOpacity
           style={[styles.controlButton, showLegend && styles.controlButtonActive]}
           onPress={() => setShowLegend(!showLegend)}
@@ -274,7 +309,6 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {/* Show live analysis while recording, otherwise show timeline slider */}
       {isRecording ? (
         <LiveAnalysisPanel
           level={liveLevel}
@@ -293,7 +327,73 @@ export default function App() {
         />
       )}
 
-      {/* Notification Toast */}
+      {shouldShowSelection && (
+        <View style={styles.selectionCard}>
+          {showList && (
+            <>
+              <View style={styles.selectionHeader}>
+                <Text style={styles.selectionTitle}>{selectedRecordings.length} Recordings Nearby</Text>
+                <TouchableOpacity onPress={closeSelection}>
+                  <Ionicons name="close-circle" size={24} color="#ccc" />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.selectionSubtitle}>Select one to view details</Text>
+              <View style={{ maxHeight: 200 }}>
+                <ScrollView>
+                    {selectedRecordings.map((rec) => (
+                        <TouchableOpacity
+                            key={rec.id}
+                            style={styles.listItem}
+                            onPress={() => setActiveDetailRecording(rec)}
+                        >
+                            <View style={[styles.dot, { backgroundColor: getNoiseColor(rec.averageDecibels || 0) }]} />
+                            <View style={styles.listItemContent}>
+                                <Text style={styles.listItemTime}>{new Date(rec.timestamp).toLocaleTimeString()}</Text>
+                                <Text style={styles.listItemDb}>{rec.averageDecibels?.toFixed(1)} dB</Text>
+                            </View>
+                            <Ionicons name="chevron-forward" size={20} color="#666" />
+                        </TouchableOpacity>
+                    ))}
+                </ScrollView>
+              </View>
+            </>
+          )}
+
+          {showDetail && activeDetailRecording && (
+            <>
+              <View style={styles.selectionHeader}>
+                <View style={styles.headerLeft}>
+                   {selectedRecordings.length > 1 && (
+                       <TouchableOpacity onPress={() => setActiveDetailRecording(null)} style={styles.backButton}>
+                           <Ionicons name="arrow-back" size={20} color="#fff" />
+                       </TouchableOpacity>
+                   )}
+                   <Text style={styles.selectionTitle}>Recording Details</Text>
+                </View>
+                <TouchableOpacity onPress={closeSelection}>
+                  <Ionicons name="close-circle" size={24} color="#ccc" />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.selectionText}>Time: {new Date(activeDetailRecording.timestamp).toLocaleString()}</Text>
+              <View style={styles.selectionStats}>
+                <View style={styles.statItem}>
+                  <Text style={styles.statLabel}>Avg dB</Text>
+                  <Text style={styles.statValue}>{activeDetailRecording.averageDecibels?.toFixed(1) || '--'}</Text>
+                </View>
+                <View style={styles.statItem}>
+                  <Text style={styles.statLabel}>Peak dB</Text>
+                  <Text style={styles.statValue}>{activeDetailRecording.peakDecibels?.toFixed(1) || '--'}</Text>
+                </View>
+                <View style={styles.statItem}>
+                  <Text style={styles.statLabel}>Duration</Text>
+                  <Text style={styles.statValue}>{activeDetailRecording.duration?.toFixed(1) || '--'}s</Text>
+                </View>
+              </View>
+            </>
+          )}
+        </View>
+      )}
+
       {notification && (
         <View style={[styles.notification, styles[`notification_${notification.type}`]]}>
           <Text style={styles.notificationText}>{notification.message}</Text>
@@ -376,4 +476,87 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
+  selectionCard: {
+    position: 'absolute',
+    bottom: 120,
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(30, 30, 40, 0.95)',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  selectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  backButton: {
+    marginRight: 10,
+  },
+  selectionTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  selectionSubtitle: {
+    color: '#aaa',
+    fontSize: 12,
+    marginBottom: 10,
+  },
+  selectionText: {
+    color: '#aaa',
+    fontSize: 12,
+    marginBottom: 12,
+  },
+  selectionStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  statItem: {
+    alignItems: 'center',
+  },
+  statLabel: {
+    color: '#888',
+    fontSize: 11,
+    marginBottom: 4,
+  },
+  statValue: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  listItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: 'rgba(255,255,255,0.1)',
+  },
+  listItemContent: {
+      flex: 1,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      marginHorizontal: 10,
+  },
+  listItemTime: {
+      color: '#fff',
+      fontSize: 14,
+  },
+  listItemDb: {
+      color: '#ccc',
+      fontSize: 14,
+      fontWeight: 'bold',
+  },
+  dot: {
+      width: 12,
+      height: 12,
+      borderRadius: 6,
+  }
 });
