@@ -212,7 +212,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                 }
 
                 const noiseColor = getNoiseColor(properties.averageDecibels);
-                const circleRadius = Math.max(40, properties.averageDecibels);
+                const circleRadius = Math.max(60, properties.averageDecibels * 2);
 
                 return (
                     <React.Fragment key={`point-${properties.id}`}>
@@ -236,7 +236,7 @@ export const MapComponent: React.FC<MapComponentProps> = ({
                             zIndex={2}
                         >
                             <View style={styles.hitBox}>
-                                <View style={styles.centerDot} />
+                                <View style={[styles.centerDot, { backgroundColor: noiseColor }]} />
                             </View>
                         </Marker>
                     </React.Fragment>
@@ -274,9 +274,10 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     centerDot: {
-        width: 4,
-        height: 4,
-        borderRadius: 2,
-        backgroundColor: 'rgba(255, 255, 255, 0.8)',
+        width: 12,
+        height: 12,
+        borderRadius: 6,
+        borderWidth: 2,
+        borderColor: 'white',
     }
 });

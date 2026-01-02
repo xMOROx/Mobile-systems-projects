@@ -24,8 +24,8 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [region, setRegion] = useState<Region | undefined>(undefined);
   const [timeRange, setTimeRange] = useState<{ start: number; end: number }>({ start: 0, end: Date.now() });
-  const [showTimeline, setShowTimeline] = useState(true);
-  const [showLegend, setShowLegend] = useState(true);
+  const [showTimeline, setShowTimeline] = useState(false);
+  const [showLegend, setShowLegend] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const notificationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [liveLevel, setLiveLevel] = useState<number | null>(null);
