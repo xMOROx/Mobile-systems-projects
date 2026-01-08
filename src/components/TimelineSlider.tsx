@@ -1,17 +1,24 @@
-import React, { useState, useMemo } from 'react';
-import { View, Text, StyleSheet, Dimensions } from 'react-native';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { View, Text, StyleSheet, Dimensions, TouchableOpacity } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-// 5 minute intervals for a week = 7 * 24 * 12 = 2016 intervals
-const MINUTES_PER_INTERVAL = 5;
+// Use 15-minute intervals for better precision on mobile (672 intervals for 7 days)
+const MINUTES_PER_INTERVAL = 15;
 const INTERVALS_PER_HOUR = 60 / MINUTES_PER_INTERVAL;
 const INTERVALS_PER_DAY = 24 * INTERVALS_PER_HOUR;
 const MAX_DAYS = 7;
-const MAX_INTERVALS = MAX_DAYS * INTERVALS_PER_DAY; // 2016
+const MAX_INTERVALS = MAX_DAYS * INTERVALS_PER_DAY; // 672
+
+// Tolerance for matching slider value to quick select buttons (in intervals)
+// This allows slight variations in slider position to still highlight the correct button
+const QUICK_SELECT_MATCH_TOLERANCE = 2;
+
+// Minimum touch target size for accessibility (44px is recommended minimum)
+const MIN_TOUCH_TARGET_HEIGHT = 44;
 
 export interface TimelineSliderProps {
     onTimeChange: (startTime: number, endTime: number) => void;
@@ -29,8 +36,18 @@ export const TimelineSlider: React.FC<TimelineSliderProps> = ({
     // 0 = now (all data), MAX_INTERVALS = 7 days ago
     const [sliderValue, setSliderValue] = useState(0);
     const [windowSize, setWindowSize] = useState(INTERVALS_PER_HOUR); // 1 hour window by default
+    
+    // Use refs to store stable values and prevent infinite loops
+    const onTimeChangeRef = useRef(onTimeChange);
+    const lastNotifiedRef = useRef<{ start: number; end: number } | null>(null);
+    
+    // Update ref when callback changes
+    useEffect(() => {
+        onTimeChangeRef.current = onTimeChange;
+    }, [onTimeChange]);
 
-    const { startTime, endTime, displayText, dateText } = useMemo(() => {
+    // Calculate time range based on slider value
+    const calculateTimeRange = useCallback(() => {
         const now = Date.now();
 
         if (sliderValue === 0) {
@@ -83,18 +100,74 @@ export const TimelineSlider: React.FC<TimelineSliderProps> = ({
         };
     }, [sliderValue, windowSize]);
 
-    const handleSliderChange = (value: number) => {
-        setSliderValue(value);
-    };
+    const { startTime, endTime, displayText, dateText } = calculateTimeRange();
 
-    const handleSliderComplete = (value: number) => {
-        setSliderValue(value);
-        onTimeChange(startTime, endTime);
-    };
+    // Notify parent of time changes, but avoid infinite loops
+    const notifyTimeChange = useCallback((start: number, end: number) => {
+        // Only notify if values actually changed
+        if (
+            lastNotifiedRef.current?.start !== start ||
+            lastNotifiedRef.current?.end !== end
+        ) {
+            lastNotifiedRef.current = { start, end };
+            onTimeChangeRef.current(start, end);
+        }
+    }, []);
 
-    React.useEffect(() => {
-        onTimeChange(startTime, endTime);
-    }, [startTime, endTime]);
+    const handleSliderChange = useCallback((value: number) => {
+        setSliderValue(value);
+    }, []);
+
+    const handleSliderComplete = useCallback((value: number) => {
+        setSliderValue(value);
+        // Calculate and notify immediately on completion
+        const now = Date.now();
+        if (value === 0) {
+            notifyTimeChange(0, now);
+        } else {
+            const intervalsAgo = value;
+            const centerTime = now - (intervalsAgo * MINUTES_PER_INTERVAL * 60 * 1000);
+            const halfWindow = (windowSize * MINUTES_PER_INTERVAL * 60 * 1000) / 2;
+            const start = centerTime - halfWindow;
+            const end = Math.min(centerTime + halfWindow, now);
+            notifyTimeChange(start, end);
+        }
+    }, [windowSize, notifyTimeChange]);
+
+    // Quick select handlers for common time ranges
+    const selectTimeRange = useCallback((hoursAgo: number) => {
+        if (hoursAgo === 0) {
+            setSliderValue(0);
+            notifyTimeChange(0, Date.now());
+        } else {
+            // Calculate slider value for the time ago
+            const intervals = Math.round((hoursAgo * 60) / MINUTES_PER_INTERVAL);
+            setSliderValue(Math.min(intervals, MAX_INTERVALS));
+            
+            const now = Date.now();
+            const centerTime = now - (intervals * MINUTES_PER_INTERVAL * 60 * 1000);
+            const halfWindow = (windowSize * MINUTES_PER_INTERVAL * 60 * 1000) / 2;
+            const start = centerTime - halfWindow;
+            const end = Math.min(centerTime + halfWindow, now);
+            notifyTimeChange(start, end);
+        }
+    }, [windowSize, notifyTimeChange]);
+
+    const handleWindowSizeChange = useCallback((newSize: number) => {
+        setWindowSize(newSize);
+        // Recalculate with new window size
+        const now = Date.now();
+        if (sliderValue === 0) {
+            notifyTimeChange(0, now);
+        } else {
+            const intervalsAgo = sliderValue;
+            const centerTime = now - (intervalsAgo * MINUTES_PER_INTERVAL * 60 * 1000);
+            const halfWindow = (newSize * MINUTES_PER_INTERVAL * 60 * 1000) / 2;
+            const start = centerTime - halfWindow;
+            const end = Math.min(centerTime + halfWindow, now);
+            notifyTimeChange(start, end);
+        }
+    }, [sliderValue, notifyTimeChange]);
 
     if (!visible) return null;
 
@@ -131,32 +204,77 @@ export const TimelineSlider: React.FC<TimelineSliderProps> = ({
                     )}
                 </View>
 
-                {/* Slider */}
+                {/* Quick select buttons */}
+                <View style={styles.quickSelectContainer}>
+                    <Text style={styles.quickSelectLabel}>Quick select:</Text>
+                    <View style={styles.quickSelectButtons}>
+                        {[
+                            { label: 'All', hours: 0 },
+                            { label: '1h', hours: 1 },
+                            { label: '6h', hours: 6 },
+                            { label: '12h', hours: 12 },
+                            { label: '24h', hours: 24 },
+                            { label: '3d', hours: 72 },
+                            { label: '7d', hours: 168 },
+                        ].map((option) => {
+                            const isActive = option.hours === 0 
+                                ? sliderValue === 0 
+                                : Math.abs(sliderValue - Math.round((option.hours * 60) / MINUTES_PER_INTERVAL)) < QUICK_SELECT_MATCH_TOLERANCE;
+                            return (
+                                <TouchableOpacity
+                                    key={option.label}
+                                    style={[
+                                        styles.quickSelectButton,
+                                        isActive && styles.quickSelectButtonActive,
+                                    ]}
+                                    onPress={() => selectTimeRange(option.hours)}
+                                    activeOpacity={0.7}
+                                >
+                                    <Text style={[
+                                        styles.quickSelectButtonText,
+                                        isActive && styles.quickSelectButtonTextActive,
+                                    ]}>
+                                        {option.label}
+                                    </Text>
+                                </TouchableOpacity>
+                            );
+                        })}
+                    </View>
+                </View>
+
+                {/* Slider with improved touch area */}
                 <View style={styles.sliderContainer}>
                     <View style={styles.sliderLabels}>
                         <Text style={styles.sliderLabel}>Now</Text>
                         <Text style={styles.sliderLabel}>7 days ago</Text>
                     </View>
-                    <Slider
-                        style={styles.slider}
-                        minimumValue={0}
-                        maximumValue={MAX_INTERVALS}
-                        step={1}
-                        value={sliderValue}
-                        onValueChange={handleSliderChange}
-                        onSlidingComplete={handleSliderComplete}
-                        minimumTrackTintColor="#4A90D9"
-                        maximumTrackTintColor="rgba(255, 255, 255, 0.3)"
-                        thumbTintColor="#FFFFFF"
-                    />
+                    <View style={styles.sliderWrapper}>
+                        <Slider
+                            style={styles.slider}
+                            minimumValue={0}
+                            maximumValue={MAX_INTERVALS}
+                            step={1}
+                            value={sliderValue}
+                            onValueChange={handleSliderChange}
+                            onSlidingComplete={handleSliderComplete}
+                            minimumTrackTintColor="#4A90D9"
+                            maximumTrackTintColor="rgba(255, 255, 255, 0.3)"
+                            thumbTintColor="#FFFFFF"
+                        />
+                    </View>
 
-                    {/* Day markers */}
+                    {/* Day markers - simplified */}
                     <View style={styles.dayMarkers}>
                         {[0, 1, 2, 3, 4, 5, 6, 7].map((day) => (
-                            <View key={day} style={styles.dayMarker}>
+                            <TouchableOpacity 
+                                key={day} 
+                                style={styles.dayMarker}
+                                onPress={() => selectTimeRange(day * 24)}
+                                activeOpacity={0.7}
+                            >
                                 <View style={styles.markerTick} />
                                 <Text style={styles.markerText}>{day === 0 ? 'Now' : `-${day}d`}</Text>
-                            </View>
+                            </TouchableOpacity>
                         ))}
                     </View>
                 </View>
@@ -166,22 +284,29 @@ export const TimelineSlider: React.FC<TimelineSliderProps> = ({
                     <Text style={styles.windowLabel}>Time window:</Text>
                     <View style={styles.windowButtons}>
                         {[
-                            { label: '5m', value: 1 },
-                            { label: '30m', value: 6 },
-                            { label: '1h', value: INTERVALS_PER_HOUR },
-                            { label: '6h', value: INTERVALS_PER_HOUR * 6 },
-                            { label: '24h', value: INTERVALS_PER_DAY },
+                            // Each value represents intervals (1 interval = 15 minutes)
+                            { label: '15m', value: 1 },           // 1 × 15min = 15 min window
+                            { label: '1h', value: INTERVALS_PER_HOUR },  // 4 × 15min = 1 hour
+                            { label: '3h', value: INTERVALS_PER_HOUR * 3 }, // 12 × 15min = 3 hours
+                            { label: '6h', value: INTERVALS_PER_HOUR * 6 }, // 24 × 15min = 6 hours
+                            { label: '24h', value: INTERVALS_PER_DAY },     // 96 × 15min = 24 hours
                         ].map((option) => (
-                            <Text
+                            <TouchableOpacity
                                 key={option.label}
                                 style={[
                                     styles.windowButton,
                                     windowSize === option.value && styles.windowButtonActive,
                                 ]}
-                                onPress={() => setWindowSize(option.value)}
+                                onPress={() => handleWindowSizeChange(option.value)}
+                                activeOpacity={0.7}
                             >
-                                {option.label}
-                            </Text>
+                                <Text style={[
+                                    styles.windowButtonText,
+                                    windowSize === option.value && styles.windowButtonTextActive,
+                                ]}>
+                                    {option.label}
+                                </Text>
+                            </TouchableOpacity>
                         ))}
                     </View>
                 </View>
@@ -201,7 +326,7 @@ const styles = StyleSheet.create({
     gradientBackground: {
         borderRadius: 20,
         paddingVertical: 15,
-        paddingHorizontal: 20,
+        paddingHorizontal: 16,
     },
     header: {
         flexDirection: 'row',
@@ -234,7 +359,7 @@ const styles = StyleSheet.create({
     },
     timeText: {
         color: '#FFFFFF',
-        fontSize: 24,
+        fontSize: 22,
         fontWeight: '700',
         letterSpacing: 1,
     },
@@ -243,6 +368,43 @@ const styles = StyleSheet.create({
         fontSize: 12,
         marginTop: 2,
     },
+    // Quick select buttons
+    quickSelectContainer: {
+        marginBottom: 12,
+    },
+    quickSelectLabel: {
+        color: '#8E8E93',
+        fontSize: 11,
+        marginBottom: 8,
+        textTransform: 'uppercase',
+    },
+    quickSelectButtons: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        gap: 6,
+    },
+    quickSelectButton: {
+        flex: 1,
+        paddingVertical: 10,
+        paddingHorizontal: 4,
+        borderRadius: 10,
+        backgroundColor: 'rgba(255, 255, 255, 0.1)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: MIN_TOUCH_TARGET_HEIGHT,
+    },
+    quickSelectButtonActive: {
+        backgroundColor: '#4A90D9',
+    },
+    quickSelectButtonText: {
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 13,
+        fontWeight: '600',
+    },
+    quickSelectButtonTextActive: {
+        color: '#FFFFFF',
+    },
+    // Slider
     sliderContainer: {
         marginBottom: 10,
     },
@@ -250,62 +412,79 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         justifyContent: 'space-between',
         paddingHorizontal: 5,
-        marginBottom: 5,
+        marginBottom: 0,
     },
     sliderLabel: {
         color: '#8E8E93',
         fontSize: 10,
         textTransform: 'uppercase',
     },
+    sliderWrapper: {
+        paddingVertical: 8,
+    },
     slider: {
         width: '100%',
-        height: 40,
+        height: 50,
     },
     dayMarkers: {
         flexDirection: 'row',
         justifyContent: 'space-between',
-        paddingHorizontal: 10,
-        marginTop: -5,
+        paddingHorizontal: 6,
+        marginTop: -8,
     },
     dayMarker: {
         alignItems: 'center',
+        paddingVertical: 4,
+        paddingHorizontal: 2,
     },
     markerTick: {
-        width: 1,
-        height: 6,
-        backgroundColor: 'rgba(255, 255, 255, 0.3)',
+        width: 2,
+        height: 8,
+        backgroundColor: 'rgba(255, 255, 255, 0.4)',
+        borderRadius: 1,
     },
     markerText: {
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 8,
-        marginTop: 2,
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 9,
+        marginTop: 3,
+        fontWeight: '500',
     },
+    // Window size selector
     windowSelector: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        marginTop: 5,
+        marginTop: 8,
     },
     windowLabel: {
         color: '#8E8E93',
-        fontSize: 12,
+        fontSize: 11,
+        textTransform: 'uppercase',
     },
     windowButtons: {
         flexDirection: 'row',
-        gap: 8,
+        gap: 6,
     },
     windowButton: {
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 12,
-        paddingHorizontal: 10,
-        paddingVertical: 5,
-        borderRadius: 12,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 10,
         backgroundColor: 'rgba(255, 255, 255, 0.1)',
-        overflow: 'hidden',
+        minWidth: MIN_TOUCH_TARGET_HEIGHT,
+        minHeight: MIN_TOUCH_TARGET_HEIGHT,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     windowButtonActive: {
-        color: '#FFFFFF',
         backgroundColor: '#4A90D9',
+    },
+    windowButtonText: {
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    windowButtonTextActive: {
+        color: '#FFFFFF',
     },
 });
 
