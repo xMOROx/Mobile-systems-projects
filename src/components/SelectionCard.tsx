@@ -22,6 +22,19 @@ export const SelectionCard: React.FC<SelectionCardProps> = ({
   const showList = selectedRecordings.length > 1 && !activeDetailRecording;
   const showDetail = !!activeDetailRecording;
 
+  const overallAverageDb = selectedRecordings.length > 0
+    ? selectedRecordings.reduce((sum, rec) => sum + (rec.averageDecibels || 0), 0) / selectedRecordings.length
+    : 0;
+
+  const standardDeviation = selectedRecordings.length > 0
+    ? Math.sqrt(
+      selectedRecordings.reduce(
+        (sum, rec) => sum + Math.pow((rec.averageDecibels || 0) - overallAverageDb, 2),
+        0
+      ) / selectedRecordings.length
+    )
+    : 0;
+
   return (
     <View style={styles.selectionCard}>
       {showList && (
@@ -35,7 +48,7 @@ export const SelectionCard: React.FC<SelectionCardProps> = ({
             </TouchableOpacity>
           </View>
           <Text style={styles.selectionSubtitle}>Select one to view details</Text>
-          <View style={{ maxHeight: 200 }}>
+          <View style={[{ maxHeight: 200 }, styles.listContainer]}>
             <ScrollView>
               {selectedRecordings.map((rec) => (
                 <TouchableOpacity
@@ -56,6 +69,17 @@ export const SelectionCard: React.FC<SelectionCardProps> = ({
                 </TouchableOpacity>
               ))}
             </ScrollView>
+          </View>
+
+          <View style={[styles.selectionStats, styles.aggregateStats]}>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Overall Avg dB</Text>
+              <Text style={styles.statValue}>{overallAverageDb.toFixed(1)}</Text>
+            </View>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Deviation ± dB</Text>
+              <Text style={styles.statValue}>{standardDeviation.toFixed(1)}</Text>
+            </View>
           </View>
         </>
       )}
@@ -187,5 +211,14 @@ const styles = StyleSheet.create({
     width: 12,
     height: 12,
     borderRadius: 6,
+  },
+  listContainer: {
+    marginBottom: 8,
+  },
+  aggregateStats: {
+    marginTop: 8,
+    borderTopWidth: 1.2,
+    borderTopColor: 'rgba(255,255,255,0.1)',
+    paddingTop: 12,
   },
 });
